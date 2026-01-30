@@ -20,6 +20,7 @@ type SecretConfig struct {
 	AllowedCmds []string // glob patterns for allowed command lines
 	SymlinkTo   string   // optional path to create a symlink to the secret
 	Writable    bool     // allow writing back to password manager
+	OPAccount   string   // optional: override 1Password account for this secret
 }
 
 func (s *SecretConfig) CreateSymlink(mountPoint string) (string, error) {

@@ -1,3 +1,5 @@
+op_account: ""  # default 1Password account (can be overridden per-secret)
+
 secrets:
   - reference: "op://[VAULT-UUID]/[ITEM-UUID]/[VAULT-FIELD]"
     filename: "secrets.json"
@@ -6,3 +8,4 @@ secrets:
     allowed_cmds:  # optional: glob patterns for allowed commands
       - "/usr/bin/myapp"
       - "python *"
+    # op_account: ""  # optional: override account for this secret

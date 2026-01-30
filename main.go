@@ -18,13 +18,15 @@ import (
 )
 
 type Config struct {
-	Secrets []struct {
+	OPAccount string `yaml:"op_account"`
+	Secrets   []struct {
 		Reference   string   `yaml:"reference"`
 		Filename    string   `yaml:"filename"`
 		MaxReads    int32    `yaml:"max_reads"`
 		AllowedCmds []string `yaml:"allowed_cmds"`
 		SymlinkTo   string   `yaml:"symlink_to"`
 		Writable    bool     `yaml:"writable"`
+		OPAccount   string   `yaml:"op_account"`
 	} `yaml:"secrets"`
 }
 
@@ -81,6 +83,7 @@ func main() {
 			AllowedCmds: s.AllowedCmds,
 			SymlinkTo:   s.SymlinkTo,
 			Writable:    s.Writable,
+			OPAccount:   s.OPAccount,
 		}
 	}
 
@@ -92,7 +95,11 @@ func main() {
 	}
 
 	// Initialize secret manager (uses desktop app auth via OP_ACCOUNT or --account flag)
+	// Priority: env var > config file
 	account := os.Getenv("OP_ACCOUNT")
+	if account == "" {
+		account = cfg.OPAccount
+	}
 	manager, err := secretmanager.NewOnePasswordManager(ctx, refs, account)
 	if err != nil {
 		log.Fatalf("Failed to initialize 1Password: %v", err)
