@@ -25,6 +25,8 @@ go install github.com/evict/secrets-fuse@latest
 Create a configuration file at `~/.config/secret-fuse.conf` or `config.yaml`:
 
 ```yaml
+op_account: "my.1password.com"  # default 1Password account (optional)
+
 secrets:
   - reference: "op://VAULT-UUID/ITEM-UUID/FIELD"
     filename: "secrets.json"
@@ -34,6 +36,7 @@ secrets:
       - "/usr/bin/myapp"
       - "python *"
     symlink_to: "~/.config/app/secrets.json"  # optional: create symlink to secret
+    # op_account: "other.1password.com"  # optional: override account for this secret
 ```
 
 ### Writable Secrets
@@ -43,6 +46,12 @@ Set `writable: true` to allow writing to the secret file. Changes are written ba
 ### Symlinks
 
 The `symlink_to` field creates a symlink pointing to the mounted secret file. Supports `~` expansion. The symlink is created on mount and removed on unmount. Only existing symlinks will be replaced; regular files are not overwritten.
+
+### 1Password Account
+
+The `op_account` field specifies which 1Password account to use for desktop app integration. It can be set at the top level as a default, or per-secret to override.
+
+Priority: `OP_ACCOUNT` environment variable > config file `op_account`
 
 ### Allowlist Patterns
 
