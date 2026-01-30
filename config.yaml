@@ -1,0 +1,4 @@
+secrets:
+  - reference: "op://[VAULT-UUID]/[ITEM-UUID]/[VAULT-FIELD]"
+    filename: "secrets.json"
+    max_reads: 1  # 0 = unlimited, uses --max-reads flag default
