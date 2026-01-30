@@ -2,6 +2,18 @@
 
 A FUSE filesystem that exposes secrets from 1Password as virtual files.
 
+## Prerequisites
+
+### Enable 1Password Desktop Integration
+
+1. Open and unlock the [1Password app](https://1password.com/downloads/)
+2. Select your account or collection at the top of the sidebar
+3. Navigate to **Settings** > **Developer**
+4. Under "Integrate with the 1Password SDKs", select **Integrate with other apps**
+5. (Optional) For biometric unlock, go to **Settings** > **Security** and enable **Unlock using Touch ID** (macOS) or **Windows Hello** (Windows)
+
+See [1Password SDK documentation](https://developer.1password.com/docs/sdks/desktop-app-integrations/) for more details.
+
 ## Installation
 
 ```bash
@@ -17,11 +29,16 @@ secrets:
   - reference: "op://VAULT-UUID/ITEM-UUID/FIELD"
     filename: "secrets.json"
     max_reads: 1  # 0 = unlimited
+    writable: true  # optional: allow writing back to password manager
     allowed_cmds:  # optional: restrict which commands can read this secret
       - "/usr/bin/myapp"
       - "python *"
     symlink_to: "~/.config/app/secrets.json"  # optional: create symlink to secret
 ```
+
+### Writable Secrets
+
+Set `writable: true` to allow writing to the secret file. Changes are written back to the password manager. A backup of the previous value is created automatically (e.g., `field_previous` for fields, `.bak` for document files).
 
 ### Symlinks
 
@@ -99,19 +116,22 @@ secrets:
 ## Usage
 
 ```bash
-# Mount with default config (~/.config/secret-fuse.conf or ./config.yaml)
-secrets-fuse -mount ~/mnt/secrets
+# Mount with default path (/tmp/secrets-mount)
+secrets-fuse
+
+# Mount with custom path
+secrets-fuse -mount /run/user/$(id -u)/secrets
 
 # Mount with explicit config
-secrets-fuse -mount ~/mnt/secrets -config /path/to/config.yaml
+secrets-fuse -mount /tmp/secrets -config /path/to/config.yaml
 
 # Enable debug logging
-secrets-fuse -mount ~/mnt/secrets -debug
+secrets-fuse -debug
 ```
 
 ### Flags
 
-- `-mount`: Mount point for the secrets filesystem (default: `~/mnt/secrets`)
+- `-mount`: Mount point for the secrets filesystem (default: `/tmp/secrets-mount`)
 - `-config`: Path to configuration file (default: `~/.config/secret-fuse.conf` or `config.yaml`)
 - `-max-reads`: Default maximum reads per secret, 0 = unlimited (default: 0)
 - `-debug`: Enable FUSE debug logging

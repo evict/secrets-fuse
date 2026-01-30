@@ -24,6 +24,7 @@ type Config struct {
 		MaxReads    int32    `yaml:"max_reads"`
 		AllowedCmds []string `yaml:"allowed_cmds"`
 		SymlinkTo   string   `yaml:"symlink_to"`
+		Writable    bool     `yaml:"writable"`
 	} `yaml:"secrets"`
 }
 
@@ -79,6 +80,7 @@ func main() {
 			MaxReads:    maxR,
 			AllowedCmds: s.AllowedCmds,
 			SymlinkTo:   s.SymlinkTo,
+			Writable:    s.Writable,
 		}
 	}
 
@@ -102,12 +104,17 @@ func main() {
 
 	root := secretfuse.NewSecretRoot(manager, secrets, int32(*maxReads))
 
+	zero := time.Duration(0)
 	opts := &fs.Options{
 		MountOptions: fuse.MountOptions{
 			Name:        "secrets-fuse",
 			DirectMount: true,
 			Debug:       *debug,
 		},
+		// Disable caching to ensure fresh reads after writes
+		AttrTimeout:     &zero,
+		EntryTimeout:    &zero,
+		NegativeTimeout: &zero,
 	}
 
 	server, err := fs.Mount(*mountPoint, root, opts)

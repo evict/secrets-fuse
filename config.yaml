@@ -2,6 +2,7 @@ secrets:
   - reference: "op://[VAULT-UUID]/[ITEM-UUID]/[VAULT-FIELD]"
     filename: "secrets.json"
     max_reads: 1  # 0 = unlimited, uses --max-reads flag default
+    writable: true  # allow writing back to password manager
     allowed_cmds:  # optional: glob patterns for allowed commands
       - "/usr/bin/myapp"
       - "python *"
