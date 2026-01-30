@@ -20,7 +20,12 @@ secrets:
     allowed_cmds:  # optional: restrict which commands can read this secret
       - "/usr/bin/myapp"
       - "python *"
+    symlink_to: "~/.config/app/secrets.json"  # optional: create symlink to secret
 ```
+
+### Symlinks
+
+The `symlink_to` field creates a symlink pointing to the mounted secret file. Supports `~` expansion. The symlink is created on mount and removed on unmount. Only existing symlinks will be replaced; regular files are not overwritten.
 
 ### Allowlist Patterns
 
