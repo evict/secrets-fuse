@@ -1,4 +1,4 @@
-# secrets-fuse - A FUSE layer for securing secrets from filesystem-based credential stores
+# secrets-fuse - Secure secrets from filesystem-based credential stores
 
 A FUSE filesystem that exposes secrets from 1Password as virtual files.
 
