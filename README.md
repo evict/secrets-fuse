@@ -17,7 +17,19 @@ secrets:
   - reference: "op://VAULT-UUID/ITEM-UUID/FIELD"
     filename: "secrets.json"
     max_reads: 1  # 0 = unlimited
+    allowed_cmds:  # optional: restrict which commands can read this secret
+      - "/usr/bin/myapp"
+      - "python *"
 ```
+
+### Allowlist Patterns
+
+The `allowed_cmds` field accepts glob patterns matched against the full command line or executable path:
+
+- `/usr/bin/myapp` - exact match
+- `python *` - any python command
+- `*/node *` - node from any path
+- Empty list or omitted = allow all
 
 ### Getting 1Password References
 

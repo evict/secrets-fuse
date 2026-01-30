@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-
 	"os/signal"
 	"syscall"
 	"time"
@@ -20,9 +19,11 @@ import (
 
 type Config struct {
 	Secrets []struct {
-		Reference string `yaml:"reference"`
-		Filename  string `yaml:"filename"`
-		MaxReads  int32  `yaml:"max_reads"`
+		Reference   string   `yaml:"reference"`
+		Filename    string   `yaml:"filename"`
+		MaxReads    int32    `yaml:"max_reads"`
+		AllowedCmds []string `yaml:"allowed_cmds"`
+		SymlinkTo   string   `yaml:"symlink_to"`
 	} `yaml:"secrets"`
 }
 
@@ -73,9 +74,11 @@ func main() {
 			maxR = int32(*maxReads)
 		}
 		secrets[i] = secretfuse.SecretConfig{
-			Reference: s.Reference,
-			Filename:  s.Filename,
-			MaxReads:  maxR,
+			Reference:   s.Reference,
+			Filename:    s.Filename,
+			MaxReads:    maxR,
+			AllowedCmds: s.AllowedCmds,
+			SymlinkTo:   s.SymlinkTo,
 		}
 	}
 
@@ -122,6 +125,18 @@ func main() {
 		fmt.Printf("  - %s (max reads: %s)\n", s.Filename, readLimit)
 	}
 
+	var symlinks []string
+	for i := range secrets {
+		link, err := secrets[i].CreateSymlink(*mountPoint)
+		if err != nil {
+			log.Fatalf("Failed to create symlink: %v", err)
+		}
+		if link != "" {
+			symlinks = append(symlinks, link)
+			fmt.Printf("  symlink: %s\n", link)
+		}
+	}
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -129,6 +144,12 @@ func main() {
 	go func() {
 		<-sigChan
 		fmt.Println("\nUnmounting...")
+
+		for _, link := range symlinks {
+			if err := os.Remove(link); err != nil {
+				fmt.Printf("Failed to remove symlink %s: %v\n", link, err)
+			}
+		}
 
 		// Try graceful unmount with timeout
 		done := make(chan error, 1)

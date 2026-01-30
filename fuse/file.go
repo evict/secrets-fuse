@@ -2,7 +2,9 @@ package fuse
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -15,8 +17,9 @@ import (
 
 type SecretFile struct {
 	fs.Inode
-	manager   secretmanager.SecretManager
-	reference string
+	manager     secretmanager.SecretManager
+	reference   string
+	allowedCmds []string
 
 	mu        sync.Mutex
 	content   []byte
@@ -24,31 +27,69 @@ type SecretFile struct {
 	maxReads  int32
 }
 
-func NewSecretFile(manager secretmanager.SecretManager, reference string, maxReads int32) *SecretFile {
+func NewSecretFile(manager secretmanager.SecretManager, reference string, maxReads int32, allowedCmds []string) *SecretFile {
 	return &SecretFile{
-		manager:   manager,
-		reference: reference,
-		maxReads:  maxReads,
+		manager:     manager,
+		reference:   reference,
+		maxReads:    maxReads,
+		allowedCmds: allowedCmds,
 	}
+}
+
+func (f *SecretFile) isAllowed(cmdline string) bool {
+	if len(f.allowedCmds) == 0 {
+		return true // no allowlist = allow all
+	}
+	for _, pattern := range f.allowedCmds {
+		if matched, _ := filepath.Match(pattern, cmdline); matched {
+			return true
+		}
+		// Also try matching just the first arg (executable name)
+		if matched, _ := filepath.Match(pattern, firstArg(cmdline)); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func firstArg(cmdline string) string {
+	for i, c := range cmdline {
+		if c == ' ' {
+			return cmdline[:i]
+		}
+	}
+	return cmdline
 }
 
 func (f *SecretFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Check read limit
+	// Get caller info for logging and allowlist
+	caller, _ := fuse.FromContext(ctx)
+	callerInfo := "unknown"
+	cmdline := ""
+	if caller != nil {
+		cmdline = getCmdline(caller.Pid)
+		callerInfo = fmt.Sprintf("uid=%d gid=%d pid=%d cmd=%q", caller.Uid, caller.Gid, caller.Pid, cmdline)
+	}
+
+	if !f.isAllowed(cmdline) {
+		log.Printf("Secret %s: access denied (not in allowlist) [%s]", f.reference, callerInfo)
+		return nil, 0, syscall.EACCES
+	}
+
 	if f.maxReads > 0 {
 		current := f.readCount.Load()
 		if current >= f.maxReads {
-			log.Printf("Secret %s: read limit (%d) exhausted", f.reference, f.maxReads)
+			log.Printf("Secret %s: read limit (%d) exhausted [%s]", f.reference, f.maxReads, callerInfo)
 			return nil, 0, syscall.EACCES
 		}
 	}
 
-	// Fetch fresh from secret manager
 	val, err := f.manager.Resolve(ctx, f.reference)
 	if err != nil {
-		log.Printf("Failed to resolve %s: %v", f.reference, err)
+		log.Printf("Failed to resolve %s: %v [%s]", f.reference, err, callerInfo)
 		return nil, 0, syscall.ENOENT
 	}
 
@@ -56,7 +97,9 @@ func (f *SecretFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uin
 	f.readCount.Add(1)
 
 	if f.maxReads > 0 {
-		log.Printf("Secret %s: read %d/%d", f.reference, f.readCount.Load(), f.maxReads)
+		log.Printf("Secret %s: access granted (read %d/%d) [%s]", f.reference, f.readCount.Load(), f.maxReads, callerInfo)
+	} else {
+		log.Printf("Secret %s: access granted [%s]", f.reference, callerInfo)
 	}
 
 	return nil, fuse.FOPEN_DIRECT_IO, 0
