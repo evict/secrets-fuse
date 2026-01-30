@@ -21,19 +21,27 @@ secrets:
 
 ### Getting 1Password References
 
-1. List your vaults to get the vault UUID:
+1. List your accounts to get the account URL:
+
+```bash
+op account list
+```
+
+Use the value from the URL column (e.g., `my.1password.com`).
+
+2. List your vaults to get the vault UUID:
 
 ```bash
 op vault list
 ```
 
-2. List items in a vault to get the item UUID:
+3. List items in a vault to get the item UUID:
 
 ```bash
 op item list --vault VAULT-UUID
 ```
 
-3. Get item details to see available fields:
+4. Get item details to see available fields:
 
 ```bash
 op item get ITEM-UUID
@@ -44,6 +52,11 @@ Common fields: `password`, `username`, `credential`, `notesPlain`
 ### Example
 
 ```bash
+# Get account URL
+$ op account list
+URL                           EMAIL
+my.1password.com              user@example.com
+
 # Get vault UUID
 $ op vault list
 ID                            NAME
@@ -70,18 +83,18 @@ secrets:
 
 ```bash
 # Mount with default config (~/.config/secret-fuse.conf or ./config.yaml)
-secrets-fuse -mount /tmp/secrets
+secrets-fuse -mount ~/mnt/secrets
 
 # Mount with explicit config
-secrets-fuse -mount /tmp/secrets -config /path/to/config.yaml
+secrets-fuse -mount ~/mnt/secrets -config /path/to/config.yaml
 
 # Enable debug logging
-secrets-fuse -mount /tmp/secrets -debug
+secrets-fuse -mount ~/mnt/secrets -debug
 ```
 
 ### Flags
 
-- `-mount`: Mount point for the secrets filesystem (default: `/tmp/secrets-mount`)
+- `-mount`: Mount point for the secrets filesystem (default: `~/mnt/secrets`)
 - `-config`: Path to configuration file (default: `~/.config/secret-fuse.conf` or `config.yaml`)
 - `-max-reads`: Default maximum reads per secret, 0 = unlimited (default: 0)
 - `-debug`: Enable FUSE debug logging
