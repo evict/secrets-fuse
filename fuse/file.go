@@ -57,6 +57,27 @@ func (f *SecretFile) isAllowed(cmdline string) bool {
 	return false
 }
 
+func (f *SecretFile) checkAccess(caller *fuse.Caller, op string) (cmdline string, callerInfo string, errno syscall.Errno) {
+	if caller == nil {
+		return "", "unknown", 0
+	}
+
+	cmdline = getCmdline(caller.Pid)
+	callerInfo = fmt.Sprintf("uid=%d gid=%d pid=%d cmd=%q", caller.Uid, caller.Gid, caller.Pid, cmdline)
+
+	if !validateCmdlineExe(caller.Pid) {
+		log.Printf("Secret %s: %s denied (cmdline/exe mismatch - possible spoofing) [%s]", f.reference, op, callerInfo)
+		return cmdline, callerInfo, syscall.EACCES
+	}
+
+	if !f.isAllowed(cmdline) {
+		log.Printf("Secret %s: %s denied (not in allowlist) [%s]", f.reference, op, callerInfo)
+		return cmdline, callerInfo, syscall.EACCES
+	}
+
+	return cmdline, callerInfo, 0
+}
+
 func firstArg(cmdline string) string {
 	for i, c := range cmdline {
 		if c == ' ' {
@@ -70,18 +91,10 @@ func (f *SecretFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Get caller info for logging and allowlist
 	caller, _ := fuse.FromContext(ctx)
-	callerInfo := "unknown"
-	cmdline := ""
-	if caller != nil {
-		cmdline = getCmdline(caller.Pid)
-		callerInfo = fmt.Sprintf("uid=%d gid=%d pid=%d cmd=%q", caller.Uid, caller.Gid, caller.Pid, cmdline)
-	}
-
-	if !f.isAllowed(cmdline) {
-		log.Printf("Secret %s: access denied (not in allowlist) [%s]", f.reference, callerInfo)
-		return nil, 0, syscall.EACCES
+	_, callerInfo, errno := f.checkAccess(caller, "access")
+	if errno != 0 {
+		return nil, 0, errno
 	}
 
 	isWrite := flags&(syscall.O_WRONLY|syscall.O_RDWR) != 0
@@ -172,20 +185,13 @@ func (f *SecretFile) Write(ctx context.Context, fh fs.FileHandle, data []byte, o
 	defer f.mu.Unlock()
 
 	caller, _ := fuse.FromContext(ctx)
-	callerInfo := "unknown"
-	cmdline := ""
-	if caller != nil {
-		cmdline = getCmdline(caller.Pid)
-		callerInfo = fmt.Sprintf("uid=%d gid=%d pid=%d cmd=%q", caller.Uid, caller.Gid, caller.Pid, cmdline)
+	_, callerInfo, errno := f.checkAccess(caller, "write")
+	if errno != 0 {
+		return 0, errno
 	}
 
 	if !f.writable {
 		log.Printf("Secret %s: write denied (not writable) [%s]", f.reference, callerInfo)
-		return 0, syscall.EACCES
-	}
-
-	if !f.isAllowed(cmdline) {
-		log.Printf("Secret %s: write denied (not in allowlist) [%s]", f.reference, callerInfo)
 		return 0, syscall.EACCES
 	}
 

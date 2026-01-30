@@ -2,6 +2,11 @@
 
 A FUSE filesystem that exposes secrets from 1Password as virtual files.
 
+Features:
+- **Command allowlists** - restrict which processes can read each secret
+- **Read limits** - secrets can self-destruct after N reads
+- **Write-back support** - update secrets directly through the filesystem
+
 ## Prerequisites
 
 ### Enable 1Password Desktop Integration
