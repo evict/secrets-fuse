@@ -1,0 +1,35 @@
+name: macOS Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Test on macOS
+    runs-on: macos-latest
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        
+    - name: Install macFUSE
+      run: |
+        # Install macFUSE using Homebrew
+        brew install --cask macfuse
+        
+    - name: Get dependencies
+      run: go mod download
+      
+    - name: Run tests
+      run: go test -v ./...
+      
+    - name: Run cmdline tests
+      run: go test -v ./fuse -run "TestGet|TestValidate"
