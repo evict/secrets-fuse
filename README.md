@@ -38,8 +38,8 @@ secrets:
     max_reads: 1  # 0 = unlimited
     writable: true  # optional: allow writing back to password manager
     allowed_cmds:  # optional: restrict which commands can read this secret
-      - "/usr/bin/myapp"
-      - "python *"
+      - "/usr/bin/myapp *"
+      - "/usr/bin/pyton /opt/server.py"
     symlink_to: "~/.config/app/secrets.json"  # optional: create symlink to secret
     # op_account: "other.1password.com"  # optional: override account for this secret
 ```
