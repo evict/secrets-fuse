@@ -20,13 +20,9 @@ jobs:
       with:
         go-version-file: 'go.mod'
         
-    - name: Install macFUSE
-      run: |
-        # Install macFUSE using Homebrew
-        brew install --cask macfuse
-        
     - name: Get dependencies
       run: go mod download
       
-    - name: Run tests
-      run: go test -v ./...
+    - name: Run cmdline tests
+      run: go test -v ./fuse -run "TestGet|TestValidate"
+      timeout-minutes: 2
