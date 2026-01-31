@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -28,8 +29,10 @@ func getProcArgs(pid uint32) ([]string, error) {
 	}
 
 	// Split the command line into arguments
-	// Note: This is a simple split on spaces, which may not handle quoted args perfectly
-	// but matches the behavior expected by the allowlist matching
+	// Note: This uses simple whitespace splitting, which matches the behavior
+	// expected by the allowlist matching system in getCmdline().
+	// Arguments with spaces will be split even if originally quoted,
+	// but this is consistent with how the allowlist patterns are matched.
 	args := strings.Fields(cmdline)
 	return args, nil
 }
@@ -84,8 +87,9 @@ func validateCmdlineExe(pid uint32) bool {
 	}
 	realCmd, err := os.Stat(args[0])
 	if err != nil {
-		// If argv[0] is not a valid path, compare basenames
-		return strings.Contains(exePath, args[0])
+		// If argv[0] is not a valid path, it might be a bare command name
+		// Compare just the executable basenames
+		return filepath.Base(exePath) == filepath.Base(args[0])
 	}
 
 	return os.SameFile(realExe, realCmd)
