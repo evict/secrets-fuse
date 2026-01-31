@@ -30,6 +30,3 @@ jobs:
       
     - name: Run tests
       run: go test -v ./...
-      
-    - name: Run cmdline tests
-      run: go test -v ./fuse -run "TestGet|TestValidate"
