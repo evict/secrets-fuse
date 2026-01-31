@@ -3,73 +3,37 @@
 package fuse
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
-
-	"golang.org/x/sys/unix"
 )
 
 // getProcArgs fetches the command line arguments for a specific PID on macOS
-// using sysctl kern.procargs2 instead of shelling out to ps.
-//
-// https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_sysctl.c#L1615-L1621
-//
-//	if (argc_yes) {
-//	    suword(where, argc);
-//	    error = copyout(data, (where + sizeof(int)), size);
-//	}
-//
-// Result: [ argc (4 bytes) ] [ exec_path\0 ] [ null padding ] [ argv[0]\0 ] ... [ argv[n]\0 ]
+// using the ps command with appropriate flags to display the full command line.
 func getProcArgs(pid uint32) ([]string, error) {
-	mib := fmt.Sprintf("kern.procargs2.%d", pid)
-
-	buf, err := unix.SysctlRaw(mib)
+	// Use ps with flags to get the full command line
+	// -p: specify PID
+	// -o args=: output only the arguments (full command line)
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "args=")
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to run ps: %w", err)
 	}
 
-	if len(buf) < 4 {
-		return nil, fmt.Errorf("buffer too small")
+	// Parse the output - ps returns the full command line
+	cmdline := strings.TrimSpace(string(output))
+	if cmdline == "" {
+		return nil, fmt.Errorf("empty command line")
 	}
 
-	// argc is native int written by suword(); macOS is little-endian on both x86_64 and arm64
-	argc := int(binary.LittleEndian.Uint32(buf[0:4]))
-	offset := 4
-
-	// 2. Read the executable path (ends with null byte)
-	execPathEnd := bytes.IndexByte(buf[offset:], 0)
-	if execPathEnd == -1 {
-		return nil, fmt.Errorf("malformed buffer: no executable path null terminator")
-	}
-	offset += execPathEnd + 1
-
-	// 3. Skip trailing null padding
-	for offset < len(buf) && buf[offset] == 0 {
-		offset++
-	}
-
-	if offset >= len(buf) {
-		return nil, fmt.Errorf("buffer ended before arguments")
-	}
-
-	// 4. Read 'argc' arguments
-	args := make([]string, 0, argc)
-	for i := 0; i < argc; i++ {
-		nextNull := bytes.IndexByte(buf[offset:], 0)
-		if nextNull == -1 {
-			if offset < len(buf) {
-				args = append(args, string(buf[offset:]))
-			}
-			break
-		}
-
-		arg := string(buf[offset : offset+nextNull])
-		args = append(args, arg)
-		offset += nextNull + 1
-	}
-
+	// Split the command line into arguments
+	// Note: This uses simple whitespace splitting, which matches the behavior
+	// expected by the allowlist matching system in getCmdline().
+	// Arguments with spaces will be split even if originally quoted,
+	// but this is consistent with how the allowlist patterns are matched.
+	args := strings.Fields(cmdline)
 	return args, nil
 }
 
@@ -82,24 +46,21 @@ func getCmdline(pid uint32) string {
 }
 
 func getExePath(pid uint32) (string, error) {
-	// Use kern.procargs2 to get the executable path (it's right after argc)
-	mib := fmt.Sprintf("kern.procargs2.%d", pid)
-	buf, err := unix.SysctlRaw(mib)
+	// Use ps to get the executable path
+	// -p: specify PID
+	// -o comm=: output only the command name (executable path)
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=")
+	output, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to run ps: %w", err)
 	}
 
-	if len(buf) < 4 {
-		return "", fmt.Errorf("buffer too small")
+	exePath := strings.TrimSpace(string(output))
+	if exePath == "" {
+		return "", fmt.Errorf("empty executable path")
 	}
 
-	offset := 4
-	execPathEnd := bytes.IndexByte(buf[offset:], 0)
-	if execPathEnd == -1 {
-		return "", fmt.Errorf("malformed buffer: no executable path null terminator")
-	}
-
-	return string(buf[offset : offset+execPathEnd]), nil
+	return exePath, nil
 }
 
 func validateCmdlineExe(pid uint32) bool {
@@ -120,5 +81,18 @@ func validateCmdlineExe(pid uint32) bool {
 
 	// Check if they resolve to the same file
 	// (argv[0] might be a symlink or relative path)
-	return true // Best-effort: allow if we got valid data from sysctl
+	realExe, err := os.Stat(exePath)
+	if err != nil {
+		return false
+	}
+	realCmd, err := os.Stat(args[0])
+	if err != nil {
+		// If argv[0] is not a valid path, it might be a bare command name
+		// (e.g., "python" instead of "/usr/bin/python")
+		// Compare just the executable basenames as a fallback.
+		// Note: This is a best-effort validation that may not catch all edge cases.
+		return filepath.Base(exePath) == filepath.Base(args[0])
+	}
+
+	return os.SameFile(realExe, realCmd)
 }
