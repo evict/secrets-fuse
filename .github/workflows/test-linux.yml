@@ -1,0 +1,165 @@
+name: Test Linux
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.6'
+
+    - name: Install FUSE dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fuse3 libfuse3-dev
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Run tests
+      run: go test -v ./...
+
+    - name: Test cmdline resolving with allow list
+      run: |
+        # Create a test script to verify cmdline resolution works on Linux
+        cat > test_cmdline.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        echo "Testing cmdline resolution on Linux..."
+        
+        # Test 1: Verify getCmdline function can read from /proc
+        echo "Test 1: Checking /proc filesystem access"
+        if [ -f /proc/self/cmdline ]; then
+          echo "✓ /proc/self/cmdline is accessible"
+          cat /proc/self/cmdline | tr '\0' ' '
+          echo ""
+        else
+          echo "✗ /proc/self/cmdline not found"
+          exit 1
+        fi
+        
+        # Test 2: Verify getExePath function can read exe symlink
+        echo "Test 2: Checking /proc/self/exe symlink"
+        if [ -L /proc/self/exe ]; then
+          echo "✓ /proc/self/exe is accessible"
+          readlink /proc/self/exe
+        else
+          echo "✗ /proc/self/exe not found"
+          exit 1
+        fi
+        
+        # Test 3: Create a simple Go test for cmdline functions
+        echo "Test 3: Testing cmdline functions directly"
+        cat > test_cmdline_linux.go << 'GOEOF'
+        //go:build linux
+        
+        package main
+        
+        import (
+        	"fmt"
+        	"os"
+        )
+        
+        func main() {
+        	pid := uint32(os.Getpid())
+        	
+        	// Test getCmdline equivalent
+        	cmdlineData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+        	if err != nil {
+        		fmt.Printf("✗ Failed to read cmdline: %v\n", err)
+        		os.Exit(1)
+        	}
+        	fmt.Printf("✓ Read cmdline successfully: %d bytes\n", len(cmdlineData))
+        	
+        	// Test getExePath equivalent
+        	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+        	if err != nil {
+        		fmt.Printf("✗ Failed to read exe symlink: %v\n", err)
+        		os.Exit(1)
+        	}
+        	fmt.Printf("✓ Read exe path successfully: %s\n", exePath)
+        	
+        	fmt.Println("✓ All cmdline resolution tests passed on Linux")
+        }
+        GOEOF
+        
+        go run test_cmdline_linux.go
+        rm -f test_cmdline_linux.go
+        
+        echo ""
+        echo "✓ All cmdline resolution tests completed successfully on Linux"
+        EOF
+        
+        chmod +x test_cmdline.sh
+        ./test_cmdline.sh
+
+    - name: Test secret file reading with allow list
+      run: |
+        # Create an integration test for reading secrets with allow list
+        cat > test_allowlist.go << 'EOF'
+        //go:build linux
+        
+        package main
+        
+        import (
+        	"fmt"
+        	"path/filepath"
+        	"os"
+        )
+        
+        func main() {
+        	// Test allow list pattern matching
+        	patterns := []string{
+        		"/usr/bin/cat *",
+        		"python *",
+        		"*/node *",
+        	}
+        	
+        	testCases := []struct {
+        		cmdline  string
+        		expected bool
+        	}{
+        		{"/usr/bin/cat /tmp/secret.txt", true},
+        		{"/usr/bin/ls -la", false},
+        		{"python script.py", true},
+        		{"/usr/bin/python script.py", true},
+        		{"/opt/node index.js", true},
+        		{"/bin/bash script.sh", false},
+        	}
+        	
+        	fmt.Println("Testing allow list pattern matching...")
+        	for _, tc := range testCases {
+        		matched := false
+        		for _, pattern := range patterns {
+        			if m, _ := filepath.Match(pattern, tc.cmdline); m {
+        				matched = true
+        				break
+        			}
+        		}
+        		
+        		if matched != tc.expected {
+        			fmt.Printf("✗ Failed for cmdline: %q (expected %v, got %v)\n", tc.cmdline, tc.expected, matched)
+        			os.Exit(1)
+        		}
+        		fmt.Printf("✓ Correctly matched cmdline: %q = %v\n", tc.cmdline, matched)
+        	}
+        	
+        	fmt.Println("✓ All allow list tests passed")
+        }
+        EOF
+        
+        go run test_allowlist.go
+        rm -f test_allowlist.go

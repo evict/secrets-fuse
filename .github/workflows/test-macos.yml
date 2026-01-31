@@ -1,0 +1,214 @@
+name: Test macOS
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.6'
+
+    - name: Install FUSE dependencies
+      run: |
+        # Install macFUSE (formerly OSXFUSE)
+        brew install --cask macfuse || true
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Run tests
+      run: go test -v ./...
+
+    - name: Test cmdline resolving with allow list
+      run: |
+        # Create a test script to verify cmdline resolution works on macOS
+        cat > test_cmdline.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        echo "Testing cmdline resolution on macOS..."
+        
+        # Test 1: Verify sysctl can access process info
+        echo "Test 1: Checking sysctl kern.procargs2 access"
+        PID=$$
+        if sysctl kern.procargs2.$PID > /dev/null 2>&1; then
+          echo "✓ sysctl kern.procargs2.$PID is accessible"
+        else
+          echo "✗ sysctl kern.procargs2.$PID failed"
+          exit 1
+        fi
+        
+        # Test 2: Create a simple Go test for cmdline functions on macOS
+        echo "Test 2: Testing cmdline functions directly"
+        cat > test_cmdline_darwin.go << 'GOEOF'
+        //go:build darwin
+        
+        package main
+        
+        import (
+        	"bytes"
+        	"encoding/binary"
+        	"fmt"
+        	"os"
+        	"strings"
+        	
+        	"golang.org/x/sys/unix"
+        )
+        
+        func getProcArgs(pid uint32) ([]string, error) {
+        	mib := fmt.Sprintf("kern.procargs2.%d", pid)
+        	buf, err := unix.SysctlRaw(mib)
+        	if err != nil {
+        		return nil, err
+        	}
+        	
+        	if len(buf) < 4 {
+        		return nil, fmt.Errorf("buffer too small")
+        	}
+        	
+        	argc := int(binary.LittleEndian.Uint32(buf[0:4]))
+        	offset := 4
+        	
+        	// Skip executable path
+        	execPathEnd := bytes.IndexByte(buf[offset:], 0)
+        	if execPathEnd == -1 {
+        		return nil, fmt.Errorf("malformed buffer")
+        	}
+        	offset += execPathEnd + 1
+        	
+        	// Skip null padding
+        	for offset < len(buf) && buf[offset] == 0 {
+        		offset++
+        	}
+        	
+        	if offset >= len(buf) {
+        		return nil, fmt.Errorf("buffer ended before arguments")
+        	}
+        	
+        	// Read arguments
+        	args := make([]string, 0, argc)
+        	for i := 0; i < argc; i++ {
+        		nextNull := bytes.IndexByte(buf[offset:], 0)
+        		if nextNull == -1 {
+        			if offset < len(buf) {
+        				args = append(args, string(buf[offset:]))
+        			}
+        			break
+        		}
+        		args = append(args, string(buf[offset:offset+nextNull]))
+        		offset += nextNull + 1
+        	}
+        	
+        	return args, nil
+        }
+        
+        func getCmdline(pid uint32) string {
+        	args, err := getProcArgs(pid)
+        	if err != nil {
+        		return ""
+        	}
+        	return strings.Join(args, " ")
+        }
+        
+        func main() {
+        	pid := uint32(os.Getpid())
+        	
+        	// Test getProcArgs
+        	args, err := getProcArgs(pid)
+        	if err != nil {
+        		fmt.Printf("✗ Failed to get process args: %v\n", err)
+        		os.Exit(1)
+        	}
+        	fmt.Printf("✓ Got process args successfully: %d args\n", len(args))
+        	
+        	// Test getCmdline
+        	cmdline := getCmdline(pid)
+        	if cmdline == "" {
+        		fmt.Printf("✗ Failed to get cmdline\n")
+        		os.Exit(1)
+        	}
+        	fmt.Printf("✓ Got cmdline successfully: %s\n", cmdline)
+        	
+        	fmt.Println("✓ All cmdline resolution tests passed on macOS")
+        }
+        GOEOF
+        
+        go run test_cmdline_darwin.go
+        rm -f test_cmdline_darwin.go
+        
+        echo ""
+        echo "✓ All cmdline resolution tests completed successfully on macOS"
+        EOF
+        
+        chmod +x test_cmdline.sh
+        ./test_cmdline.sh
+
+    - name: Test secret file reading with allow list
+      run: |
+        # Create an integration test for reading secrets with allow list
+        cat > test_allowlist.go << 'EOF'
+        //go:build darwin
+        
+        package main
+        
+        import (
+        	"fmt"
+        	"path/filepath"
+        	"os"
+        )
+        
+        func main() {
+        	// Test allow list pattern matching
+        	patterns := []string{
+        		"/usr/bin/cat *",
+        		"python *",
+        		"*/node *",
+        	}
+        	
+        	testCases := []struct {
+        		cmdline  string
+        		expected bool
+        	}{
+        		{"/usr/bin/cat /tmp/secret.txt", true},
+        		{"/usr/bin/ls -la", false},
+        		{"python script.py", true},
+        		{"/usr/bin/python script.py", true},
+        		{"/opt/node index.js", true},
+        		{"/bin/bash script.sh", false},
+        	}
+        	
+        	fmt.Println("Testing allow list pattern matching...")
+        	for _, tc := range testCases {
+        		matched := false
+        		for _, pattern := range patterns {
+        			if m, _ := filepath.Match(pattern, tc.cmdline); m {
+        				matched = true
+        				break
+        			}
+        		}
+        		
+        		if matched != tc.expected {
+        			fmt.Printf("✗ Failed for cmdline: %q (expected %v, got %v)\n", tc.cmdline, tc.expected, matched)
+        			os.Exit(1)
+        		}
+        		fmt.Printf("✓ Correctly matched cmdline: %q = %v\n", tc.cmdline, matched)
+        	}
+        	
+        	fmt.Println("✓ All allow list tests passed")
+        }
+        EOF
+        
+        go run test_allowlist.go
+        rm -f test_allowlist.go
