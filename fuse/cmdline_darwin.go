@@ -31,7 +31,7 @@ const (
 // Result: [ argc (4 bytes) ] [ exec_path\0 ] [ null padding ] [ argv[0]\0 ] ... [ argv[n]\0 ]
 func getProcArgs(pid uint32) ([]string, error) {
 	// Use MIB (Management Information Base) integer array: [CTL_KERN, KERN_PROCARGS2, pid]
-	mib := []int32{ctlKern, kernProcargs2, int32(pid)}
+	mib := []int{ctlKern, kernProcargs2, int(pid)}
 	
 	buf, err := unix.SysctlRaw("", mib...)
 	if err != nil {
@@ -102,7 +102,7 @@ func getCmdline(pid uint32) string {
 
 func getExePath(pid uint32) (string, error) {
 	// Use MIB (Management Information Base) integer array: [CTL_KERN, KERN_PROCARGS2, pid]
-	mib := []int32{ctlKern, kernProcargs2, int32(pid)}
+	mib := []int{ctlKern, kernProcargs2, int(pid)}
 	
 	buf, err := unix.SysctlRaw("", mib...)
 	if err != nil {
