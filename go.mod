@@ -5,6 +5,7 @@ go 1.25.6
 require (
 	github.com/1password/onepassword-sdk-go v0.3.2-0.20260129162712-5885a91f1abd
 	github.com/hanwen/go-fuse/v2 v2.9.0
+	golang.org/x/sys v0.37.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -16,6 +17,5 @@ require (
 	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834 // indirect
 	github.com/tetratelabs/wazero v1.9.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
-	golang.org/x/sys v0.37.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
