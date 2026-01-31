@@ -88,7 +88,9 @@ func validateCmdlineExe(pid uint32) bool {
 	realCmd, err := os.Stat(args[0])
 	if err != nil {
 		// If argv[0] is not a valid path, it might be a bare command name
-		// Compare just the executable basenames
+		// (e.g., "python" instead of "/usr/bin/python")
+		// Compare just the executable basenames as a fallback.
+		// Note: This is a best-effort validation that may not catch all edge cases.
 		return filepath.Base(exePath) == filepath.Base(args[0])
 	}
 
