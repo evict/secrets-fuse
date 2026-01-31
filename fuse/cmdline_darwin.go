@@ -7,7 +7,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+// MIB constants for kern.procargs2
+// CTL_KERN = 1, KERN_PROCARGS2 = 49
+const (
+	ctlKern        = 1
+	kernProcargs2  = 49
 )
 
 // getProcArgs fetches the command line arguments for a specific PID on macOS
@@ -22,18 +30,17 @@ import (
 //
 // Result: [ argc (4 bytes) ] [ exec_path\0 ] [ null padding ] [ argv[0]\0 ] ... [ argv[n]\0 ]
 func getProcArgs(pid uint32) ([]string, error) {
-	name := fmt.Sprintf("kern.procargs2.%d", pid)
-
-	// syscall.Sysctl returns a string which is actually raw bytes
-	val, err := syscall.Sysctl(name)
+	// Use MIB (Management Information Base) integer array: [CTL_KERN, KERN_PROCARGS2, pid]
+	mib := []int32{ctlKern, kernProcargs2, int32(pid)}
+	
+	buf, err := unix.SysctlRaw("", mib...)
 	if err != nil {
 		// Debug: print the error and what we tried
-		fmt.Printf("DEBUG: Sysctl failed for name=%q pid=%d err=%v\n", name, pid, err)
-		return nil, fmt.Errorf("sysctl %s failed: %w", name, err)
+		fmt.Printf("DEBUG: SysctlRaw failed for mib=%v pid=%d err=%v\n", mib, pid, err)
+		return nil, fmt.Errorf("sysctl kern.procargs2.%d failed: %w", pid, err)
 	}
 
-	buf := []byte(val)
-	fmt.Printf("DEBUG: Sysctl succeeded for pid=%d, got %d bytes\n", pid, len(buf))
+	fmt.Printf("DEBUG: SysctlRaw succeeded for pid=%d, got %d bytes\n", pid, len(buf))
 
 	if len(buf) < 4 {
 		return nil, fmt.Errorf("buffer too small: %d bytes", len(buf))
@@ -94,15 +101,15 @@ func getCmdline(pid uint32) string {
 }
 
 func getExePath(pid uint32) (string, error) {
-	// Use kern.procargs2 to get the executable path (it's right after argc)
-	name := fmt.Sprintf("kern.procargs2.%d", pid)
-	val, err := syscall.Sysctl(name)
+	// Use MIB (Management Information Base) integer array: [CTL_KERN, KERN_PROCARGS2, pid]
+	mib := []int32{ctlKern, kernProcargs2, int32(pid)}
+	
+	buf, err := unix.SysctlRaw("", mib...)
 	if err != nil {
-		fmt.Printf("DEBUG: getExePath(%d) Sysctl failed: %v\n", pid, err)
-		return "", fmt.Errorf("sysctl %s failed: %w", name, err)
+		fmt.Printf("DEBUG: getExePath(%d) SysctlRaw failed: %v\n", pid, err)
+		return "", fmt.Errorf("sysctl kern.procargs2.%d failed: %w", pid, err)
 	}
 
-	buf := []byte(val)
 	fmt.Printf("DEBUG: getExePath(%d) got %d bytes\n", pid, len(buf))
 
 	if len(buf) < 4 {
