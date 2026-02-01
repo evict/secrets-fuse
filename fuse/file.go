@@ -171,10 +171,9 @@ func (f *SecretFile) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.At
 
 	size := max(f.writeSize, uint64(len(f.content)))
 	out.Size = size
+	out.Mode = 0400 // r--------
 	if f.writable {
 		out.Mode = 0600 // rw-------
-	} else {
-		out.Mode = 0400 // r--------
 	}
 	out.Mtime = uint64(time.Now().Unix())
 	return 0
@@ -224,10 +223,7 @@ func (f *SecretFile) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.Set
 		f.dirty = true
 	}
 
-	size := uint64(len(f.content))
-	if f.writeSize > size {
-		size = f.writeSize
-	}
+	size := max(f.writeSize, uint64(len(f.content)))
 	out.Size = size
 	out.Mode = 0600
 	out.Mtime = uint64(time.Now().Unix())
