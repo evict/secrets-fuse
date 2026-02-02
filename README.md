@@ -7,6 +7,11 @@ Features:
 - **Read limits** - secrets can self-destruct after N reads
 - **Write-back support** - update secrets directly through the filesystem
 
+<blockquote>
+<p>[!NOTE]
+This is a prototype and its currently limited in the security it provides. While it is still better than a simple filesystem based secret, it is possible to bypass the allowlisting mechanism with a well timed TOCTOU "swap" attack.
+Currently looking at improving the security model using fanotify & eBPF for Linux, and ESF for Darwin.</p>
+</blockquote>
 ## Prerequisites
 
 ### Enable 1Password Desktop Integration
