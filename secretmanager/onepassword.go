@@ -142,7 +142,12 @@ func isSessionExpiredError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "session expired") || strings.Contains(msg, "unable to retrieve vaults")
+	return strings.Contains(msg, "session expired") ||
+		strings.Contains(msg, "unable to retrieve vaults") ||
+		strings.Contains(msg, "invalid client id") ||
+		strings.Contains(msg, "invalid client") ||
+		strings.Contains(msg, "client is not authenticated") ||
+		strings.Contains(msg, "unauthorized")
 }
 
 func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword.Item, filename string, content []byte) error {
