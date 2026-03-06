@@ -8,7 +8,7 @@ import (
 )
 
 func getCmdline(pid uint32) string {
-	proc, err := process.NewProcess(int32(pid))
+	proc, err := process.NewProcess(int32(pid)) // #nosec G115 -- PID fits in int32
 	if err != nil {
 		return ""
 	}
@@ -22,7 +22,7 @@ func getCmdline(pid uint32) string {
 }
 
 func validateCmdlineExe(pid uint32) bool {
-	proc, err := process.NewProcess(int32(pid))
+	proc, err := process.NewProcess(int32(pid)) // #nosec G115 -- PID fits in int32
 	if err != nil {
 		return false
 	}

@@ -85,7 +85,7 @@ func TestWriteThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
-	defer server.Unmount()
+	defer func() { _ = server.Unmount() }()
 
 	secretPath := filepath.Join(mountPoint, "secret.txt")
 
@@ -159,7 +159,7 @@ func TestWriteViaRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
-	defer server.Unmount()
+	defer func() { _ = server.Unmount() }()
 
 	secretPath := filepath.Join(mountPoint, "secret.txt")
 

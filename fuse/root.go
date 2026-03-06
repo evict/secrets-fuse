@@ -21,6 +21,7 @@ type SecretConfig struct {
 	SymlinkTo   string   // optional path to create a symlink to the secret
 	Writable    bool     // allow writing back to password manager
 	OPAccount   string   // optional: override 1Password account for this secret
+	GuardPID    uint32   // if set, only this PID may open files (guard mode)
 }
 
 func (s *SecretConfig) CreateSymlink(mountPoint string) (string, error) {
@@ -44,7 +45,7 @@ func (s *SecretConfig) CreateSymlink(mountPoint string) (string, error) {
 
 	if info, err := os.Lstat(linkPath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
-			os.Remove(linkPath)
+			_ = os.Remove(linkPath)
 		} else {
 			return "", fmt.Errorf("path %s exists and is not a symlink", linkPath)
 		}
@@ -150,7 +151,7 @@ func (f *EphemeralFile) Write(ctx context.Context, fh fs.FileHandle, data []byte
 		f.content = newContent
 	}
 	copy(f.content[off:], data)
-	return uint32(len(data)), 0
+	return uint32(len(data)), 0 // #nosec G115 -- data len fits in uint32
 }
 
 func (f *EphemeralFile) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -213,7 +214,7 @@ func (r *SecretRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 			if maxReads == 0 {
 				maxReads = r.maxReads
 			}
-			sf := NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable)
+			sf := NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID)
 			child := r.NewInode(ctx, sf, fs.StableAttr{Mode: fuse.S_IFREG})
 			r.AddChild(name, child, true)
 			return child, 0
@@ -274,7 +275,7 @@ func (r *SecretRoot) OnAdd(ctx context.Context) {
 			maxReads = r.maxReads
 		}
 
-		child := r.NewInode(ctx, NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable),
+		child := r.NewInode(ctx, NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID),
 			fs.StableAttr{Mode: fuse.S_IFREG})
 		r.AddChild(filename, child, true)
 	}

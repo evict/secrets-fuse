@@ -1,5 +1,3 @@
-//go:build linux
-
 package fuse
 
 import (
@@ -9,7 +7,7 @@ import (
 )
 
 func getExePath(pid uint32) (string, error) {
-	proc, err := process.NewProcess(int32(pid))
+	proc, err := process.NewProcess(int32(pid)) // #nosec G115 -- PID fits in int32
 	if err != nil {
 		return "", err
 	}

@@ -1,11 +1,12 @@
 op_account: ""  # default 1Password account (can be overridden per-secret)
 
 secrets:
-  - reference: "op://[VAULT-UUID]/[ITEM-UUID]/[VAULT-FIELD]"
-    filename: "secrets.json"
-    max_reads: 1  # 0 = unlimited, uses --max-reads flag default
-    writable: true  # allow writing back to password manager
-    allowed_cmds:  # optional: glob patterns for allowed commands
-      - "/usr/bin/myapp"
-      - "python *"
-    # op_account: ""  # optional: override account for this secret
+  - path: "~/.config/app/secrets.json"      # path the app tries to open
+    reference: "op://[VAULT-UUID]/[ITEM-UUID]/[VAULT-FIELD]"
+    # filename: "secrets.json"              # optional: FUSE filename (defaults to basename of path)
+    max_reads: 0                            # 0 = unlimited
+    writable: false
+    trusted_binaries:                       # SHA-256 hashes of allowed executables
+      # Generate with: secrets-guard -hash /usr/bin/myapp
+      # - "sha256:abc123..."
+    # op_account: ""                        # optional: override account for this secret
