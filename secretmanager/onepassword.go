@@ -3,7 +3,9 @@ package secretmanager
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 
 	"github.com/1password/onepassword-sdk-go"
 )
@@ -11,33 +13,36 @@ import (
 type OnePasswordManager struct {
 	client  *onepassword.Client
 	secrets []string // configured secret references
+	account string
+	mu      sync.RWMutex
 }
 
 func NewOnePasswordManager(ctx context.Context, secrets []string, account string) (*OnePasswordManager, error) {
-	opts := []onepassword.ClientOption{
-		onepassword.WithIntegrationInfo("secrets-fuse", "1.0.0"),
+	manager := &OnePasswordManager{
+		secrets: secrets,
+		account: account,
 	}
-
-	if account != "" {
-		opts = append(opts, onepassword.WithDesktopAppIntegration(account))
-	} else {
-		token := ""
-		opts = append(opts, onepassword.WithServiceAccountToken(token))
-	}
-
-	client, err := onepassword.NewClient(ctx, opts...)
+	client, err := manager.newClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return &OnePasswordManager{
-		client:  client,
-		secrets: secrets,
-	}, nil
+	manager.client = client
+	return manager, nil
 }
 
 func (m *OnePasswordManager) Resolve(ctx context.Context, reference string) (string, error) {
-	return m.client.Secrets().Resolve(ctx, reference)
+	client := m.currentClient()
+	value, err := client.Secrets().Resolve(ctx, reference)
+	if err == nil || !isSessionExpiredError(err) {
+		return value, err
+	}
+
+	if refreshErr := m.refreshClient(ctx); refreshErr != nil {
+		return value, err
+	}
+
+	client = m.currentClient()
+	return client.Secrets().Resolve(ctx, reference)
 }
 
 // parseReference extracts vault, item, and field from "op://vault/item/field"
@@ -53,12 +58,29 @@ func parseReference(reference string) (vaultID, itemID, fieldID string, err erro
 }
 
 func (m *OnePasswordManager) Write(ctx context.Context, reference string, value string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		err := m.writeOnce(ctx, reference, value)
+		if err == nil {
+			return nil
+		}
+		if !isSessionExpiredError(err) || attempt == 1 {
+			return err
+		}
+		if refreshErr := m.refreshClient(ctx); refreshErr != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *OnePasswordManager) writeOnce(ctx context.Context, reference string, value string) error {
 	vaultID, itemID, fieldID, err := parseReference(reference)
 	if err != nil {
 		return err
 	}
 
-	item, err := m.client.Items().Get(ctx, vaultID, itemID)
+	client := m.currentClient()
+	item, err := client.Items().Get(ctx, vaultID, itemID)
 	if err != nil {
 		return fmt.Errorf("failed to get item: %w", err)
 	}
@@ -79,9 +101,54 @@ func (m *OnePasswordManager) Write(ctx context.Context, reference string, value 
 	return m.writeField(ctx, item, fieldID, value)
 }
 
+func (m *OnePasswordManager) newClient(ctx context.Context) (*onepassword.Client, error) {
+	opts := []onepassword.ClientOption{
+		onepassword.WithIntegrationInfo("secrets-fuse", "1.0.0"),
+	}
+
+	if m.account != "" {
+		opts = append(opts, onepassword.WithDesktopAppIntegration(m.account))
+	} else {
+		token := ""
+		opts = append(opts, onepassword.WithServiceAccountToken(token))
+	}
+
+	return onepassword.NewClient(ctx, opts...)
+}
+
+func (m *OnePasswordManager) refreshClient(ctx context.Context) error {
+	client, err := m.newClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+
+	log.Print("1Password session refreshed")
+	return nil
+}
+
+func (m *OnePasswordManager) currentClient() *onepassword.Client {
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+	return client
+}
+
+func isSessionExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "session expired") || strings.Contains(msg, "unable to retrieve vaults")
+}
+
 func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword.Item, filename string, content []byte) error {
 	// Read current content for backup
-	oldContent, err := m.client.Items().Files().Read(ctx, item.VaultID, item.ID, *item.Document)
+	client := m.currentClient()
+	oldContent, err := client.Items().Files().Read(ctx, item.VaultID, item.ID, *item.Document)
 	if err != nil {
 		return fmt.Errorf("failed to read current document: %w", err)
 	}
@@ -90,7 +157,7 @@ func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword
 	backupFieldID := "backup_" + item.Document.Name
 	for _, file := range item.Files {
 		if file.FieldID == backupFieldID {
-			item, err = m.client.Items().Files().Delete(ctx, item, file.SectionID, file.FieldID)
+			item, err = client.Items().Files().Delete(ctx, item, file.SectionID, file.FieldID)
 			if err != nil {
 				return fmt.Errorf("failed to delete old backup: %w", err)
 			}
@@ -100,7 +167,7 @@ func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword
 
 	// Attach backup as .bak file
 	backupName := item.Document.Name + ".bak"
-	item, err = m.client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
+	item, err = client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
 		Name:    backupName,
 		Content: oldContent,
 		FieldID: backupFieldID,
@@ -110,7 +177,7 @@ func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword
 	}
 
 	// Replace the document
-	_, err = m.client.Items().Files().ReplaceDocument(ctx, item, onepassword.DocumentCreateParams{
+	_, err = client.Items().Files().ReplaceDocument(ctx, item, onepassword.DocumentCreateParams{
 		Name:    filename,
 		Content: content,
 	})
@@ -123,20 +190,21 @@ func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword
 
 func (m *OnePasswordManager) writeFileAttachment(ctx context.Context, item onepassword.Item, file onepassword.ItemFile, content []byte) error {
 	// Read current content for backup
-	oldContent, err := m.client.Items().Files().Read(ctx, item.VaultID, item.ID, file.Attributes)
+	client := m.currentClient()
+	oldContent, err := client.Items().Files().Read(ctx, item.VaultID, item.ID, file.Attributes)
 	if err != nil {
 		return fmt.Errorf("failed to read current file: %w", err)
 	}
 
 	// Delete the old file
-	item, err = m.client.Items().Files().Delete(ctx, item, file.SectionID, file.FieldID)
+	item, err = client.Items().Files().Delete(ctx, item, file.SectionID, file.FieldID)
 	if err != nil {
 		return fmt.Errorf("failed to delete old file: %w", err)
 	}
 
 	// Attach backup
 	backupName := file.Attributes.Name + ".bak"
-	item, err = m.client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
+	item, err = client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
 		Name:      backupName,
 		Content:   oldContent,
 		SectionID: file.SectionID,
@@ -147,7 +215,7 @@ func (m *OnePasswordManager) writeFileAttachment(ctx context.Context, item onepa
 	}
 
 	// Attach new file
-	_, err = m.client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
+	_, err = client.Items().Files().Attach(ctx, item, onepassword.FileCreateParams{
 		Name:      file.Attributes.Name,
 		Content:   content,
 		SectionID: file.SectionID,
@@ -194,7 +262,8 @@ func (m *OnePasswordManager) writeField(ctx context.Context, item onepassword.It
 
 	item.Fields[fieldIdx].Value = value
 
-	_, err := m.client.Items().Put(ctx, item)
+	client := m.currentClient()
+	_, err := client.Items().Put(ctx, item)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %w", err)
 	}
