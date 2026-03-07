@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -97,6 +98,10 @@ func main() {
 	fmt.Printf("secrets-guard: running %s\n", target)
 
 	if err := g.Run(target, args); err != nil {
+		var exitErr *guard.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		log.Fatalf("guard: %v", err)
 	}
 }

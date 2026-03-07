@@ -10,7 +10,7 @@ A process wrapper that transparently intercepts file reads and injects secrets f
 2. It re-execs itself as a child, installs a seccomp BPF filter intercepting `openat`/`openat2`, then execs the target binary
 3. When the target opens a configured secret path, the seccomp notification wakes the parent
 4. The parent reads `/proc/PID/exe` (kernel-resolved, unforgeable), hashes it, and checks against trusted hashes
-5. If trusted: opens the secret on the private FUSE mount, injects the fd into the child via `SECCOMP_ADDFD_FLAG_SEND`
+5. If trusted: the first successful secret opener pins the guarded runtime identity (`proc.name` + full command line), then only that exact identity can access the secret; the guard opens the secret on the private FUSE mount and injects the fd via `SECCOMP_ADDFD_FLAG_SEND`
 6. The child's `openat()` returns the FUSE fd transparently — it reads the secret as if it were a normal file
 7. The child runs with `PR_SET_DUMPABLE=0`, making `/proc/PID/fd/` root-only
 
@@ -119,6 +119,7 @@ secrets-guard -hash /usr/bin/myapp
 |---|---|
 | seccomp `USER_NOTIF` | Intercepts `openat`/`openat2`; child suspended until parent responds |
 | Binary hash verification | `/proc/PID/exe` is kernel-resolved, cannot be spoofed |
+| Guarded process identity | The first trusted runtime process pins the allowed `proc.name` and command line; later children must match exactly |
 | TOCTOU checks | `notif_id_valid()` called before and after path extraction |
 | Private FUSE mount | Random path under `/run/user/UID/` (mode 0700) |
 | FUSE guard PID | Only the parent process can open FUSE files |

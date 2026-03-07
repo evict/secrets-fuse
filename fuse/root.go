@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/evict/secrets-guard/procid"
 	"github.com/evict/secrets-guard/secretmanager"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -22,6 +23,7 @@ type SecretConfig struct {
 	Writable    bool     // allow writing back to password manager
 	OPAccount   string   // optional: override 1Password account for this secret
 	GuardPID    uint32   // if set, only this PID may open files (guard mode)
+	GuardProc   *procid.Guard
 }
 
 func (s *SecretConfig) CreateSymlink(mountPoint string) (string, error) {
@@ -214,7 +216,7 @@ func (r *SecretRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 			if maxReads == 0 {
 				maxReads = r.maxReads
 			}
-			sf := NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID)
+			sf := NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID, secret.GuardProc)
 			child := r.NewInode(ctx, sf, fs.StableAttr{Mode: fuse.S_IFREG})
 			r.AddChild(name, child, true)
 			return child, 0
@@ -275,7 +277,7 @@ func (r *SecretRoot) OnAdd(ctx context.Context) {
 			maxReads = r.maxReads
 		}
 
-		child := r.NewInode(ctx, NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID),
+		child := r.NewInode(ctx, NewSecretFile(r.manager, secret.Reference, maxReads, secret.AllowedCmds, secret.Writable, secret.GuardPID, secret.GuardProc),
 			fs.StableAttr{Mode: fuse.S_IFREG})
 		r.AddChild(filename, child, true)
 	}

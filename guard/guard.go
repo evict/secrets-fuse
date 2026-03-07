@@ -6,12 +6,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	secretguard "github.com/evict/secrets-guard/fuse"
+	"github.com/evict/secrets-guard/procid"
 	"github.com/evict/secrets-guard/seccomp"
 	"github.com/evict/secrets-guard/secretmanager"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -23,20 +26,28 @@ const childEnvKey = "__SECRETS_GUARD_CHILD"
 
 // SecretMapping maps an app-visible path to a 1Password reference.
 type SecretMapping struct {
-	Path           string   // path the app tries to open (absolute, ~ expanded)
-	Reference      string   // op:// reference
-	Filename       string   // FUSE filename (defaults to basename of Path)
-	TrustedHashes  []string // "sha256:..." hashes of allowed binaries
-	MaxReads       int32
-	Writable       bool
+	Path          string   // path the app tries to open (absolute, ~ expanded)
+	Reference     string   // op:// reference
+	Filename      string   // FUSE filename (defaults to basename of Path)
+	TrustedHashes []string // "sha256:..." hashes of allowed binaries
+	MaxReads      int32
+	Writable      bool
 }
 
 // Guard orchestrates the seccomp-notify + FUSE secret serving.
 type Guard struct {
-	manager  secretmanager.SecretManager
-	secrets  []SecretMapping
-	pathMap  map[string]*SecretMapping // resolved path → mapping
-	debug    bool
+	manager secretmanager.SecretManager
+	secrets []SecretMapping
+	pathMap map[string]*SecretMapping // resolved path → mapping
+	debug   bool
+}
+
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("child exited with code %d", e.Code)
 }
 
 // New creates a Guard with the given secret mappings.
@@ -72,11 +83,11 @@ func (g *Guard) Run(target string, args []string) error {
 			return fmt.Errorf("create fuse tmpdir: %w", err)
 		}
 	}
-	defer os.RemoveAll(fusePath)
 	_ = os.Chmod(fusePath, 0700) // #nosec G302 -- directory needs execute bit
 
 	// Build FUSE secret configs
 	guardPID := uint32(os.Getpid()) // #nosec G115 -- PID fits in uint32
+	guardProc := procid.NewGuard()
 	fuseSecrets := make([]secretguard.SecretConfig, len(g.secrets))
 	for i, s := range g.secrets {
 		fuseSecrets[i] = secretguard.SecretConfig{
@@ -85,6 +96,7 @@ func (g *Guard) Run(target string, args []string) error {
 			MaxReads:  s.MaxReads,
 			Writable:  s.Writable,
 			GuardPID:  guardPID,
+			GuardProc: guardProc,
 		}
 	}
 
@@ -105,7 +117,15 @@ func (g *Guard) Run(target string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("fuse mount: %w", err)
 	}
-	defer func() { _ = server.Unmount() }()
+
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			_ = server.Unmount()
+			_ = os.RemoveAll(fusePath)
+		})
+	}
+	defer cleanup()
 
 	log.Printf("FUSE mounted at %s (private)", fusePath)
 
@@ -119,7 +139,7 @@ func (g *Guard) Run(target string, args []string) error {
 
 	// Spawn child (re-exec with child mode)
 	childSockFile := os.NewFile(uintptr(childSock), "guard-sock") // #nosec G115 -- fd fits in uintptr
-	cmd := exec.Command(os.Args[0])                              // #nosec G204 -- intentional re-exec of self
+	cmd := exec.Command(os.Args[0])                               // #nosec G204 -- intentional re-exec of self
 	cmd.Args = append([]string{os.Args[0]}, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -158,25 +178,45 @@ func (g *Guard) Run(target string, args []string) error {
 
 	log.Printf("received notify_fd=%d, starting interception", notifyFd)
 
-	// Run notification loop in background
+	// Run notification loop in background.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go g.notifyLoop(ctx, notifyFd, fusePath)
+	go g.notifyLoop(ctx, notifyFd, fusePath, guardProc)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigCh:
+			cancel()
+			cleanup()
+			if cmd.Process != nil {
+				if forwarded, ok := sig.(syscall.Signal); ok {
+					_ = cmd.Process.Signal(forwarded)
+				}
+			}
+		case <-done:
+		}
+	}()
 
 	// Wait for child to exit
 	err = cmd.Wait()
+	close(done)
 	cancel()
+	cleanup()
 
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return &ExitError{Code: exitErr.ExitCode()}
 		}
 		return fmt.Errorf("child: %w", err)
 	}
 	return nil
 }
 
-func (g *Guard) notifyLoop(ctx context.Context, notifyFd int, fusePath string) {
+func (g *Guard) notifyLoop(ctx context.Context, notifyFd int, fusePath string, guardProc *procid.Guard) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,11 +233,11 @@ func (g *Guard) notifyLoop(ctx context.Context, notifyFd int, fusePath string) {
 			return
 		}
 
-		go g.handleNotif(notifyFd, notif, fusePath)
+		go g.handleNotif(notifyFd, notif, fusePath, guardProc)
 	}
 }
 
-func (g *Guard) handleNotif(notifyFd int, notif *seccomp.SeccompNotif, fusePath string) {
+func (g *Guard) handleNotif(notifyFd int, notif *seccomp.SeccompNotif, fusePath string, guardProc *procid.Guard) {
 	// Every notification MUST get a response. Use defer as safety net
 	// in case any code path forgets to respond.
 	responded := false
@@ -266,12 +306,32 @@ func (g *Guard) handleNotif(notifyFd int, notif *seccomp.SeccompNotif, fusePath 
 		return
 	}
 
+	currentProc, err := procid.Current(notif.PID)
+	if err != nil {
+		log.Printf("DENIED: tid=%d path=%s (inspect process identity: %v)", notif.PID, resolved, err)
+		responded = true
+		_ = seccomp.DenySyscall(notifyFd, notif.ID, int32(syscall.EACCES))
+		return
+	}
+
 	if !isTrusted(hash, mapping.TrustedHashes) {
 		exePath, _ := seccomp.ExePath(notif.PID)
 		log.Printf("DENIED: tid=%d exe=%s hash=%s path=%s", notif.PID, exePath, hash, resolved)
 		responded = true
 		_ = seccomp.DenySyscall(notifyFd, notif.ID, int32(syscall.EACCES))
 		return
+	}
+
+	matched, expected, pinned := guardProc.PinOrMatch(currentProc)
+	if !matched {
+		exePath, _ := seccomp.ExePath(notif.PID)
+		log.Printf("DENIED: tid=%d exe=%s path=%s (identity mismatch: got %s want %s)", notif.PID, exePath, resolved, currentProc.String(), expected.String())
+		responded = true
+		_ = seccomp.DenySyscall(notifyFd, notif.ID, int32(syscall.EACCES))
+		return
+	}
+	if pinned {
+		log.Printf("guard identity pinned: %s", expected.String())
 	}
 
 	// TOCTOU check again before injecting

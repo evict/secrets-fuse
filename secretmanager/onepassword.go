@@ -13,11 +13,11 @@ import (
 )
 
 type OnePasswordManager struct {
-	client    *onepassword.Client
-	secrets   []string // configured secret references
-	account   string
-	mu        sync.RWMutex
-	lastOKAt  time.Time // last successful 1Password operation
+	client   *onepassword.Client
+	secrets  []string // configured secret references
+	account  string
+	mu       sync.RWMutex
+	lastOKAt time.Time // last successful 1Password operation
 }
 
 func NewOnePasswordManager(ctx context.Context, secrets []string, account string) (*OnePasswordManager, error) {

@@ -4,10 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // ReadPathFromPid reads a null-terminated path string from the target
@@ -61,6 +64,29 @@ func ResolvePath(pid uint32, dirfd int32, path string) (string, error) {
 		return "", fmt.Errorf("readlink /proc/%d/fd/%d: %w", pid, dirfd, err)
 	}
 	return filepath.Join(dirPath, path), nil
+}
+
+// TgidOfTid reads the TGID (process ID) for a given TID (thread ID)
+// from /proc/<tid>/status.
+func TgidOfTid(tid uint32) (uint32, error) {
+	f, err := os.Open(fmt.Sprintf("/proc/%d/status", tid))
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	for _, line := range strings.SplitN(string(buf[:n]), "\n", 10) {
+		if strings.HasPrefix(line, "Tgid:") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				v, err := strconv.ParseUint(fields[1], 10, 32)
+				return uint32(v), err
+			}
+		}
+	}
+	return 0, fmt.Errorf("no Tgid in /proc/%d/status", tid)
 }
 
 // HashBinary computes the SHA-256 hash of the executable for the given PID.

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/evict/secrets-guard/procid"
 	"github.com/evict/secrets-guard/secretmanager"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -26,18 +27,19 @@ type SecretFile struct {
 	allowedCmds []string
 	writable    bool
 	guardPID    uint32 // if set, only this PID may access (guard mode)
+	guardProc   *procid.Guard
 
 	mu        sync.Mutex
 	content   []byte
 	readCount atomic.Int32
 	maxReads  int32
 
-	dirty        bool
-	writeSize    uint64
-	guardOpened  bool // set when opened by the guard; skips PID checks on Write/Flush
+	dirty       bool
+	writeSize   uint64
+	guardOpened bool // set when opened by the guard; enables identity checks on later ops
 }
 
-func NewSecretFile(manager secretmanager.SecretManager, reference string, maxReads int32, allowedCmds []string, writable bool, guardPID uint32) *SecretFile {
+func NewSecretFile(manager secretmanager.SecretManager, reference string, maxReads int32, allowedCmds []string, writable bool, guardPID uint32, guardProc *procid.Guard) *SecretFile {
 	return &SecretFile{
 		manager:     manager,
 		reference:   reference,
@@ -45,6 +47,7 @@ func NewSecretFile(manager secretmanager.SecretManager, reference string, maxRea
 		allowedCmds: allowedCmds,
 		writable:    writable,
 		guardPID:    guardPID,
+		guardProc:   guardProc,
 	}
 }
 
@@ -69,23 +72,35 @@ func (f *SecretFile) checkAccess(caller *fuse.Caller, op string) (cmdline string
 		return "", "unknown", 0
 	}
 
-	// Guard mode: only the guard process may open FUSE files directly.
-	// The guard handles trust verification via seccomp before opening.
-	// After Open, the fd is injected into the child via SECCOMP_ADDFD,
-	// so subsequent Write/Flush calls come from the child's PID.
-	// guardOpened tracks that the guard already authorized this fd.
 	if f.guardPID != 0 {
-		if f.guardOpened {
-			return "", fmt.Sprintf("tid=%d (guard-authorized)", caller.Pid), 0
-		}
-		// Not yet opened — only the guard PID may call Open.
-		// FUSE caller.Pid is a TID; resolve to TGID for comparison.
 		callerTGID, err := tgidOfTid(caller.Pid)
-		if err != nil || callerTGID != f.guardPID {
+		if err == nil && callerTGID == f.guardPID {
+			return "", fmt.Sprintf("tid=%d tgid=%d (guard)", caller.Pid, callerTGID), 0
+		}
+
+		if op == "open" || !f.guardOpened {
 			log.Printf("Secret %s: %s denied (tid %d tgid %d is not guard pid %d)", f.reference, op, caller.Pid, callerTGID, f.guardPID)
 			return "", fmt.Sprintf("tid=%d", caller.Pid), syscall.EACCES
 		}
-		return "", fmt.Sprintf("tid=%d tgid=%d (guard)", caller.Pid, callerTGID), 0
+
+		current, err := procid.Current(caller.Pid)
+		if err != nil {
+			log.Printf("Secret %s: %s denied (failed to inspect pid %d: %v)", f.reference, op, caller.Pid, err)
+			return "", fmt.Sprintf("tid=%d", caller.Pid), syscall.EACCES
+		}
+
+		callerInfo = fmt.Sprintf("tid=%d %s", caller.Pid, current.String())
+		expected, ok := f.guardProc.Expected()
+		if !ok {
+			log.Printf("Secret %s: %s denied (guard identity not established yet)", f.reference, op)
+			return current.CmdlineString(), callerInfo, syscall.EACCES
+		}
+		if !expected.Matches(current) {
+			log.Printf("Secret %s: %s denied (guard identity mismatch: got %s want %s)", f.reference, op, current.String(), expected.String())
+			return current.CmdlineString(), callerInfo, syscall.EACCES
+		}
+
+		return current.CmdlineString(), callerInfo, 0
 	}
 
 	cmdline = getCmdline(caller.Pid)
@@ -140,7 +155,7 @@ func (f *SecretFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uin
 	defer f.mu.Unlock()
 
 	caller, _ := fuse.FromContext(ctx)
-	_, callerInfo, errno := f.checkAccess(caller, "access")
+	_, callerInfo, errno := f.checkAccess(caller, "open")
 	if errno != 0 {
 		return nil, 0, errno
 	}
@@ -196,6 +211,11 @@ func (f *SecretFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uin
 func (f *SecretFile) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	caller, _ := fuse.FromContext(ctx)
+	if _, _, errno := f.checkAccess(caller, "read"); errno != 0 {
+		return nil, errno
+	}
 
 	// Re-fetch if content was invalidated (after a write)
 	if f.content == nil {
@@ -263,6 +283,12 @@ func (f *SecretFile) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.Set
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	caller, _ := fuse.FromContext(ctx)
+	_, _, errno := f.checkAccess(caller, "setattr")
+	if errno != 0 {
+		return errno
+	}
+
 	if sz, ok := in.GetSize(); ok {
 		f.writeSize = sz
 		if sz < uint64(len(f.content)) {
@@ -291,10 +317,9 @@ func (f *SecretFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno 
 	}
 
 	caller, _ := fuse.FromContext(ctx)
-	callerInfo := "unknown"
-	if caller != nil {
-		cmdline := getCmdline(caller.Pid)
-		callerInfo = fmt.Sprintf("uid=%d gid=%d pid=%d cmd=%q", caller.Uid, caller.Gid, caller.Pid, cmdline)
+	_, callerInfo, errno := f.checkAccess(caller, "flush")
+	if errno != 0 {
+		return errno
 	}
 
 	err := f.manager.Write(ctx, f.reference, string(f.content))
