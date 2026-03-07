@@ -32,9 +32,9 @@ type SecretFile struct {
 	readCount atomic.Int32
 	maxReads  int32
 
-	dirty       bool
-	writeSize   uint64
-	guardOpened bool // set when opened by the guard; skips PID checks on Write/Flush
+	dirty        bool
+	writeSize    uint64
+	guardOpened  bool // set when opened by the guard; skips PID checks on Write/Flush
 }
 
 func NewSecretFile(manager secretmanager.SecretManager, reference string, maxReads int32, allowedCmds []string, writable bool, guardPID uint32) *SecretFile {
@@ -285,10 +285,6 @@ func (f *SecretFile) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.Set
 func (f *SecretFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	// Reset guard authorization so the next Open requires going through
-	// the seccomp guard again.
-	f.guardOpened = false
 
 	if !f.dirty {
 		return 0
