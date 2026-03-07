@@ -2,19 +2,22 @@ package secretmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/1password/onepassword-sdk-go"
 )
 
 type OnePasswordManager struct {
-	client  *onepassword.Client
-	secrets []string // configured secret references
-	account string
-	mu      sync.RWMutex
+	client    *onepassword.Client
+	secrets   []string // configured secret references
+	account   string
+	mu        sync.RWMutex
+	lastOKAt  time.Time // last successful 1Password operation
 }
 
 func NewOnePasswordManager(ctx context.Context, secrets []string, account string) (*OnePasswordManager, error) {
@@ -33,16 +36,31 @@ func NewOnePasswordManager(ctx context.Context, secrets []string, account string
 func (m *OnePasswordManager) Resolve(ctx context.Context, reference string) (string, error) {
 	client := m.currentClient()
 	value, err := client.Secrets().Resolve(ctx, reference)
-	if err == nil || !isSessionExpiredError(err) {
+	if err == nil {
+		m.recordSuccess()
+		return value, nil
+	}
+	if !isRecoverableError(err) {
 		return value, err
 	}
 
+	idle := m.idleDuration()
+	log.Printf("1Password: recoverable error after %s idle, retrying: %v", idle.Truncate(time.Second), err)
+
+	// Brief delay to let the desktop app re-establish IPC after sleep/wake.
+	time.Sleep(500 * time.Millisecond)
+
 	if refreshErr := m.refreshClient(ctx); refreshErr != nil {
-		return value, err
+		return "", fmt.Errorf("1Password recovery failed (idle %s): %w — unlock or restart the 1Password desktop app", idle.Truncate(time.Second), err)
 	}
 
 	client = m.currentClient()
-	return client.Secrets().Resolve(ctx, reference)
+	value, err = client.Secrets().Resolve(ctx, reference)
+	if err != nil {
+		return "", fmt.Errorf("1Password retry failed (idle %s): %w — unlock or restart the 1Password desktop app", idle.Truncate(time.Second), err)
+	}
+	m.recordSuccess()
+	return value, nil
 }
 
 // parseReference extracts vault, item, and field from "op://vault/item/field"
@@ -58,18 +76,28 @@ func parseReference(reference string) (vaultID, itemID, fieldID string, err erro
 }
 
 func (m *OnePasswordManager) Write(ctx context.Context, reference string, value string) error {
-	for attempt := 0; attempt < 2; attempt++ {
-		err := m.writeOnce(ctx, reference, value)
-		if err == nil {
-			return nil
-		}
-		if !isSessionExpiredError(err) || attempt == 1 {
-			return err
-		}
-		if refreshErr := m.refreshClient(ctx); refreshErr != nil {
-			return err
-		}
+	err := m.writeOnce(ctx, reference, value)
+	if err == nil {
+		m.recordSuccess()
+		return nil
 	}
+	if !isRecoverableError(err) {
+		return err
+	}
+
+	idle := m.idleDuration()
+	log.Printf("1Password: recoverable write error after %s idle, retrying: %v", idle.Truncate(time.Second), err)
+	time.Sleep(500 * time.Millisecond)
+
+	if refreshErr := m.refreshClient(ctx); refreshErr != nil {
+		return fmt.Errorf("1Password recovery failed (idle %s): %w — unlock or restart the 1Password desktop app", idle.Truncate(time.Second), err)
+	}
+
+	err = m.writeOnce(ctx, reference, value)
+	if err != nil {
+		return fmt.Errorf("1Password write retry failed (idle %s): %w — unlock or restart the 1Password desktop app", idle.Truncate(time.Second), err)
+	}
+	m.recordSuccess()
 	return nil
 }
 
@@ -137,17 +165,59 @@ func (m *OnePasswordManager) currentClient() *onepassword.Client {
 	return client
 }
 
-func isSessionExpiredError(err error) bool {
+func isRecoverableError(err error) bool {
 	if err == nil {
 		return false
 	}
+
+	// Typed SDK error for desktop session expiry.
+	var expired *onepassword.DesktopSessionExpiredError
+	if errors.As(err, &expired) {
+		return true
+	}
+
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "session expired") ||
-		strings.Contains(msg, "unable to retrieve vaults") ||
-		strings.Contains(msg, "invalid client id") ||
-		strings.Contains(msg, "invalid client") ||
-		strings.Contains(msg, "client is not authenticated") ||
-		strings.Contains(msg, "unauthorized")
+	// Session/auth errors.
+	for _, s := range []string{
+		"session expired",
+		"unable to retrieve vaults",
+		"invalid client id",
+		"invalid client",
+		"client is not authenticated",
+		"unauthorized",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	// Transport errors common after sleep/wake when the IPC socket is stale.
+	for _, s := range []string{
+		"broken pipe",
+		"connection reset by peer",
+		"connection refused",
+		"eof",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *OnePasswordManager) recordSuccess() {
+	m.mu.Lock()
+	m.lastOKAt = time.Now()
+	m.mu.Unlock()
+}
+
+func (m *OnePasswordManager) idleDuration() time.Duration {
+	m.mu.RLock()
+	t := m.lastOKAt
+	m.mu.RUnlock()
+	if t.IsZero() {
+		return 0
+	}
+	return time.Since(t)
 }
 
 func (m *OnePasswordManager) writeDocument(ctx context.Context, item onepassword.Item, filename string, content []byte) error {
