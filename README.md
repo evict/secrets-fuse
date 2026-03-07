@@ -37,12 +37,12 @@ See [1Password SDK documentation](https://developer.1password.com/docs/sdks/desk
 ## Installation
 
 ```bash
-go install github.com/evict/secrets-fuse@latest
+go install github.com/evict/secrets-guard@latest
 ```
 
 ## Configuration
 
-Create a configuration file at `~/.config/secret-fuse.conf` or `config.yaml`:
+Create a configuration file at `~/.config/secrets-guard.conf` or `config.yaml`:
 
 ```yaml
 op_account: "my.1password.com"
@@ -69,7 +69,7 @@ If `trusted_binaries` is empty, any binary is allowed (useful for development).
 
 ### 1Password Account
 
-Priority: `OP_ACCOUNT` environment variable > config file `op_account`
+Priority: `-account` flag > `OP_ACCOUNT` environment variable > config file `op_account`
 
 ### Getting 1Password References
 
@@ -96,6 +96,9 @@ secrets-guard -- /usr/bin/myapp --flag
 # With explicit config
 secrets-guard -config /path/to/config.yaml -- myapp
 
+# Override 1Password account
+secrets-guard -account my.1password.com -- myapp
+
 # Enable debug logging (FUSE + seccomp)
 secrets-guard -debug -- myapp
 
@@ -105,7 +108,8 @@ secrets-guard -hash /usr/bin/myapp
 
 ### Flags
 
-- `-config`: Path to configuration file (default: `~/.config/secret-fuse.conf` or `config.yaml`)
+- `-config`: Path to configuration file (default: `~/.config/secrets-guard.conf` or `config.yaml`)
+- `-account`: 1Password account (default: `$OP_ACCOUNT`)
 - `-debug`: Enable FUSE and seccomp debug logging
 - `-hash`: Print SHA-256 hash of a binary and exit
 

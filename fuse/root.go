@@ -8,7 +8,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/evict/secrets-fuse/secretmanager"
+	"github.com/evict/secrets-guard/secretmanager"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )

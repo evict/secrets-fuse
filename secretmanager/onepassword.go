@@ -131,14 +131,8 @@ func (m *OnePasswordManager) writeOnce(ctx context.Context, reference string, va
 
 func (m *OnePasswordManager) newClient(ctx context.Context) (*onepassword.Client, error) {
 	opts := []onepassword.ClientOption{
-		onepassword.WithIntegrationInfo("secrets-fuse", "1.0.0"),
-	}
-
-	if m.account != "" {
-		opts = append(opts, onepassword.WithDesktopAppIntegration(m.account))
-	} else {
-		token := ""
-		opts = append(opts, onepassword.WithServiceAccountToken(token))
+		onepassword.WithIntegrationInfo("secrets-guard", "1.0.0"),
+		onepassword.WithDesktopAppIntegration(m.account),
 	}
 
 	return onepassword.NewClient(ctx, opts...)

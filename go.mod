@@ -1,4 +1,4 @@
-module github.com/evict/secrets-fuse
+module github.com/evict/secrets-guard
 
 go 1.25.6
 
@@ -7,7 +7,6 @@ require (
 	github.com/hanwen/go-fuse/v2 v2.9.0
 	github.com/shirou/gopsutil/v4 v4.26.1
 	golang.org/x/sys v0.40.0
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

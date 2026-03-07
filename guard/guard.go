@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	secretfuse "github.com/evict/secrets-fuse/fuse"
-	"github.com/evict/secrets-fuse/seccomp"
-	"github.com/evict/secrets-fuse/secretmanager"
+	secretguard "github.com/evict/secrets-guard/fuse"
+	"github.com/evict/secrets-guard/seccomp"
+	"github.com/evict/secrets-guard/secretmanager"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"golang.org/x/sys/unix"
@@ -23,20 +23,20 @@ const childEnvKey = "__SECRETS_GUARD_CHILD"
 
 // SecretMapping maps an app-visible path to a 1Password reference.
 type SecretMapping struct {
-	Path          string   // path the app tries to open (absolute, ~ expanded)
-	Reference     string   // op:// reference
-	Filename      string   // FUSE filename (defaults to basename of Path)
-	TrustedHashes []string // "sha256:..." hashes of allowed binaries
-	MaxReads      int32
-	Writable      bool
+	Path           string   // path the app tries to open (absolute, ~ expanded)
+	Reference      string   // op:// reference
+	Filename       string   // FUSE filename (defaults to basename of Path)
+	TrustedHashes  []string // "sha256:..." hashes of allowed binaries
+	MaxReads       int32
+	Writable       bool
 }
 
 // Guard orchestrates the seccomp-notify + FUSE secret serving.
 type Guard struct {
-	manager secretmanager.SecretManager
-	secrets []SecretMapping
-	pathMap map[string]*SecretMapping // resolved path → mapping
-	debug   bool
+	manager  secretmanager.SecretManager
+	secrets  []SecretMapping
+	pathMap  map[string]*SecretMapping // resolved path → mapping
+	debug    bool
 }
 
 // New creates a Guard with the given secret mappings.
@@ -77,9 +77,9 @@ func (g *Guard) Run(target string, args []string) error {
 
 	// Build FUSE secret configs
 	guardPID := uint32(os.Getpid()) // #nosec G115 -- PID fits in uint32
-	fuseSecrets := make([]secretfuse.SecretConfig, len(g.secrets))
+	fuseSecrets := make([]secretguard.SecretConfig, len(g.secrets))
 	for i, s := range g.secrets {
-		fuseSecrets[i] = secretfuse.SecretConfig{
+		fuseSecrets[i] = secretguard.SecretConfig{
 			Reference: s.Reference,
 			Filename:  s.Filename,
 			MaxReads:  s.MaxReads,
@@ -88,7 +88,7 @@ func (g *Guard) Run(target string, args []string) error {
 		}
 	}
 
-	root := secretfuse.NewSecretRoot(g.manager, fuseSecrets, 0)
+	root := secretguard.NewSecretRoot(g.manager, fuseSecrets, 0)
 	zero := time.Duration(0)
 	opts := &fs.Options{
 		MountOptions: fuse.MountOptions{
@@ -119,7 +119,7 @@ func (g *Guard) Run(target string, args []string) error {
 
 	// Spawn child (re-exec with child mode)
 	childSockFile := os.NewFile(uintptr(childSock), "guard-sock") // #nosec G115 -- fd fits in uintptr
-	cmd := exec.Command(os.Args[0])                               // #nosec G204 -- intentional re-exec of self
+	cmd := exec.Command(os.Args[0])                              // #nosec G204 -- intentional re-exec of self
 	cmd.Args = append([]string{os.Args[0]}, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

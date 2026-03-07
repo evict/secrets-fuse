@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evict/secrets-fuse/guard"
-	"github.com/evict/secrets-fuse/secretmanager"
+	"github.com/evict/secrets-guard/guard"
+	"github.com/evict/secrets-guard/secretmanager"
 )
 
 func expandPath(p string) string {
@@ -53,6 +53,7 @@ func main() {
 	// Parent mode
 	secretPath := flag.String("path", "", "File path to intercept (the path the app tries to open)")
 	reference := flag.String("ref", "", "1Password reference (e.g. op://vault/item/field)")
+	account := flag.String("account", os.Getenv("OP_ACCOUNT"), "1Password account (default: $OP_ACCOUNT)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	hashBinary := flag.String("hash", "", "Print SHA-256 hash of a binary and exit")
 	flag.Parse()
@@ -72,7 +73,6 @@ func main() {
 	}
 
 	ctx := context.Background()
-	account := os.Getenv("OP_ACCOUNT")
 
 	p := expandPath(*secretPath)
 	secrets := []guard.SecretMapping{{
@@ -81,7 +81,7 @@ func main() {
 		Filename:  filepath.Base(p),
 	}}
 
-	manager, err := secretmanager.NewOnePasswordManager(ctx, []string{*reference}, account)
+	manager, err := secretmanager.NewOnePasswordManager(ctx, []string{*reference}, *account)
 	if err != nil {
 		log.Fatalf("Failed to initialize 1Password: %v", err)
 	}
