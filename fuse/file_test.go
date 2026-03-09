@@ -48,7 +48,7 @@ func (m *MockSecretManager) Name() string {
 
 func TestWriteThenRead(t *testing.T) {
 	// Create temp mount point
-	mountPoint, err := os.MkdirTemp("", "secrets-fuse-test")
+	mountPoint, err := os.MkdirTemp("", "secrets-guard-test")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestWriteThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
-	defer server.Unmount()
+	defer func() { _ = server.Unmount() }()
 
 	secretPath := filepath.Join(mountPoint, "secret.txt")
 
@@ -122,7 +122,7 @@ func TestWriteThenRead(t *testing.T) {
 
 func TestWriteViaRename(t *testing.T) {
 	// Create temp mount point
-	mountPoint, err := os.MkdirTemp("", "secrets-fuse-test")
+	mountPoint, err := os.MkdirTemp("", "secrets-guard-test")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestWriteViaRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
-	defer server.Unmount()
+	defer func() { _ = server.Unmount() }()
 
 	secretPath := filepath.Join(mountPoint, "secret.txt")
 

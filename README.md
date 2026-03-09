@@ -1,11 +1,18 @@
-# secrets-fuse - Secure secrets from filesystem-based credential stores
+# secrets-guard - Transparent secret injection via seccomp + FUSE
 
-A FUSE filesystem that exposes secrets from 1Password as virtual files.
+A process wrapper that transparently intercepts file reads and injects secrets from 1Password. Applications read their normal config paths; secrets-guard intercepts the `openat` syscall, verifies the calling binary's SHA-256 hash, and serves the secret via a private FUSE mount.
 
-Features:
-- **Command allowlists** - restrict which processes can read each secret
-- **Read limits** - secrets can self-destruct after N reads
-- **Write-back support** - update secrets directly through the filesystem
+**No ptrace. No eBPF. No root required.** Uses `SECCOMP_RET_USER_NOTIF` (kernel ≥5.14) + Landlock-style private FUSE.
+
+## How it works
+
+1. `secrets-guard` mounts a private FUSE filesystem at a random path under `/run/user/UID/`
+2. It re-execs itself as a child, installs a seccomp BPF filter intercepting `openat`/`openat2`, then execs the target binary
+3. When the target opens a configured secret path, the seccomp notification wakes the parent
+4. The parent reads `/proc/PID/exe` (kernel-resolved, unforgeable), hashes it, and checks against trusted hashes
+5. If trusted: the first successful secret opener pins the guarded runtime identity (`proc.name` + full command line), then only that exact identity can access the secret; the guard opens the secret on the private FUSE mount and injects the fd via `SECCOMP_ADDFD_FLAG_SEND`
+6. The child's `openat()` returns the FUSE fd transparently — it reads the secret as if it were a normal file
+7. The child runs with `PR_SET_DUMPABLE=0`, making `/proc/PID/fd/` root-only
 
 <blockquote>
 <p>[!NOTE]
@@ -15,147 +22,112 @@ Currently looking at improving the security model using fanotify & eBPF for Linu
 
 ## Prerequisites
 
+### Linux kernel ≥5.14
+
+Required for `SECCOMP_ADDFD_FLAG_SEND`. Check with:
+
+```bash
+uname -r
+```
+
 ### Enable 1Password Desktop Integration
 
 1. Open and unlock the [1Password app](https://1password.com/downloads/)
 2. Select your account or collection at the top of the sidebar
 3. Navigate to **Settings** > **Developer**
 4. Under "Integrate with the 1Password SDKs", select **Integrate with other apps**
-5. (Optional) For biometric unlock, go to **Settings** > **Security** and enable **Unlock using Touch ID** (macOS) or **Windows Hello** (Windows)
+5. (Optional) For biometric unlock, go to **Settings** > **Security** and enable biometric unlock
 
 See [1Password SDK documentation](https://developer.1password.com/docs/sdks/desktop-app-integrations/) for more details.
 
 ## Installation
 
 ```bash
-go install github.com/evict/secrets-fuse@latest
+go install github.com/evict/secrets-guard@latest
 ```
 
 ## Configuration
 
-Create a configuration file at `~/.config/secret-fuse.conf` or `config.yaml`:
+Create a configuration file at `~/.config/secrets-guard.conf` or `config.yaml`:
 
 ```yaml
-op_account: "my.1password.com"  # default 1Password account (optional)
+op_account: "my.1password.com"
 
 secrets:
-  - reference: "op://VAULT-UUID/ITEM-UUID/FIELD"
-    filename: "secrets.json"
-    max_reads: 1  # 0 = unlimited
-    writable: true  # optional: allow writing back to password manager
-    allowed_cmds:  # optional: restrict which commands can read this secret
-      - "/usr/bin/myapp *"
-      - "/usr/bin/pyton /opt/server.py"
-    symlink_to: "~/.config/app/secrets.json"  # optional: create symlink to secret
-    # op_account: "other.1password.com"  # optional: override account for this secret
+  - path: "~/.config/app/secrets.json"      # path the app tries to open
+    reference: "op://VAULT-UUID/ITEM-UUID/FIELD"
+    trusted_binaries:                        # SHA-256 hashes of allowed executables
+      - "sha256:a1b2c3d4..."                 # /usr/bin/myapp
+    max_reads: 0                             # 0 = unlimited
+    writable: false
 ```
 
-### Writable Secrets
+### Trusted Binaries
 
-Set `writable: true` to allow writing to the secret file. Changes are written back to the password manager. A backup of the previous value is created automatically (e.g., `field_previous` for fields, `.bak` for document files).
+Generate hashes for binaries you want to allow:
 
-### Symlinks
+```bash
+secrets-guard -hash /usr/bin/myapp
+# sha256:a1b2c3d4e5f6...
+```
 
-The `symlink_to` field creates a symlink pointing to the mounted secret file. Supports `~` expansion. The symlink is created on mount and removed on unmount. Only existing symlinks will be replaced; regular files are not overwritten.
+If `trusted_binaries` is empty, any binary is allowed (useful for development).
 
 ### 1Password Account
 
-The `op_account` field specifies which 1Password account to use for desktop app integration. It can be set at the top level as a default, or per-secret to override.
-
-Priority: `OP_ACCOUNT` environment variable > config file `op_account`
-
-### Allowlist Patterns
-
-The `allowed_cmds` field accepts glob patterns matched against the full command line or executable path:
-
-- `/usr/bin/myapp` - exact match
-- `python *` - any python command
-- `*/node *` - node from any path
-- Empty list or omitted = allow all
+Priority: `-account` flag > `OP_ACCOUNT` environment variable > config file `op_account`
 
 ### Getting 1Password References
 
-1. List your accounts to get the account URL:
-
 ```bash
+# Get account URL
 op account list
-```
 
-Use the value from the URL column (e.g., `my.1password.com`).
-
-2. List your vaults to get the vault UUID:
-
-```bash
+# Get vault UUID
 op vault list
-```
 
-3. List items in a vault to get the item UUID:
-
-```bash
+# Get item UUID and fields
 op item list --vault VAULT-UUID
-```
-
-4. Get item details to see available fields:
-
-```bash
 op item get ITEM-UUID
 ```
 
 Common fields: `password`, `username`, `credential`, `notesPlain`
 
-### Example
-
-```bash
-# Get account URL
-$ op account list
-URL                           EMAIL
-my.1password.com              user@example.com
-
-# Get vault UUID
-$ op vault list
-ID                            NAME
-abc123...                     Personal
-
-# Get item UUID
-$ op item list --vault abc123
-ID                            TITLE
-def456...                     API Key
-
-# Check available fields
-$ op item get def456
-...
-password: ********
-...
-
-# Configure
-secrets:
-  - reference: "op://abc123/def456/password"
-    filename: "api-key.txt"
-```
-
 ## Usage
 
 ```bash
-# Mount with default path (/tmp/secrets-mount)
-secrets-fuse
+# Run an application with secret injection
+secrets-guard -- /usr/bin/myapp --flag
 
-# Mount with custom path
-secrets-fuse -mount /run/user/$(id -u)/secrets
+# With explicit config
+secrets-guard -config /path/to/config.yaml -- myapp
 
-# Mount with explicit config
-secrets-fuse -mount /tmp/secrets -config /path/to/config.yaml
+# Override 1Password account
+secrets-guard -account my.1password.com -- myapp
 
-# Enable debug logging
-secrets-fuse -debug
+# Enable debug logging (FUSE + seccomp)
+secrets-guard -debug -- myapp
+
+# Hash a binary for the config file
+secrets-guard -hash /usr/bin/myapp
 ```
 
 ### Flags
 
-- `-mount`: Mount point for the secrets filesystem (default: `/tmp/secrets-mount`)
-- `-config`: Path to configuration file (default: `~/.config/secret-fuse.conf` or `config.yaml`)
-- `-max-reads`: Default maximum reads per secret, 0 = unlimited (default: 0)
-- `-debug`: Enable FUSE debug logging
+- `-config`: Path to configuration file (default: `~/.config/secrets-guard.conf` or `config.yaml`)
+- `-account`: 1Password account (default: `$OP_ACCOUNT`)
+- `-debug`: Enable FUSE and seccomp debug logging
+- `-hash`: Print SHA-256 hash of a binary and exit
 
-## Unmounting
+## Security Model
 
-Press `Ctrl+C` to unmount. If the filesystem is busy, close any files or terminals using the mount and try again.
+| Layer | Protection |
+|---|---|
+| seccomp `USER_NOTIF` | Intercepts `openat`/`openat2`; child suspended until parent responds |
+| Binary hash verification | `/proc/PID/exe` is kernel-resolved, cannot be spoofed |
+| Guarded process identity | The first trusted runtime process pins the allowed `proc.name` and command line; later children must match exactly |
+| TOCTOU checks | `notif_id_valid()` called before and after path extraction |
+| Private FUSE mount | Random path under `/run/user/UID/` (mode 0700) |
+| FUSE guard PID | Only the parent process can open FUSE files |
+| `PR_SET_DUMPABLE=0` | `/proc/PID/fd/` inaccessible to non-root |
+| `PR_SET_NO_NEW_PRIVS` | Required by seccomp, prevents privilege escalation |

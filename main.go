@@ -2,186 +2,124 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
-	secretfuse "github.com/evict/secrets-fuse/fuse"
-	"github.com/evict/secrets-fuse/secretmanager"
-	"github.com/hanwen/go-fuse/v2/fs"
-	"github.com/hanwen/go-fuse/v2/fuse"
-	"gopkg.in/yaml.v3"
+	"github.com/evict/secrets-guard/guard"
+	"github.com/evict/secrets-guard/secretmanager"
 )
 
-type Config struct {
-	OPAccount string `yaml:"op_account"`
-	Secrets   []struct {
-		Reference   string   `yaml:"reference"`
-		Filename    string   `yaml:"filename"`
-		MaxReads    int32    `yaml:"max_reads"`
-		AllowedCmds []string `yaml:"allowed_cmds"`
-		SymlinkTo   string   `yaml:"symlink_to"`
-		Writable    bool     `yaml:"writable"`
-		OPAccount   string   `yaml:"op_account"`
-	} `yaml:"secrets"`
-}
-
-func loadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-	return &cfg, nil
-}
-
-func resolveConfigPath(explicit string) string {
-	if explicit != "" {
-		return explicit
-	}
-	// Check ~/.config/secret-fuse.conf
-	if home, err := os.UserHomeDir(); err == nil {
-		configPath := home + "/.config/secret-fuse.conf"
-		if _, err := os.Stat(configPath); err == nil {
-			return configPath
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
 		}
 	}
-	// Fallback to config.yaml in current directory
-	return "config.yaml"
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
 }
 
 func main() {
-	mountPoint := flag.String("mount", "/tmp/secrets-mount", "Mount point for secrets filesystem")
-	configPath := flag.String("config", "", "Path to secrets configuration file")
-	maxReads := flag.Int("max-reads", 0, "Maximum number of reads per secret (0 = unlimited)")
-	debug := flag.Bool("debug", false, "Enable FUSE debug logging")
-	flag.Parse()
-
-	cfgPath := resolveConfigPath(*configPath)
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		log.Fatalf("Failed to load config from %s: %v", cfgPath, err)
+	// Child mode: re-exec'd by guard, set up seccomp and exec target
+	if guard.IsChild() {
+		args := os.Args[1:]
+		if len(args) == 0 {
+			log.Fatal("child mode: no target command")
+		}
+		target, err := exec.LookPath(args[0])
+		if err != nil {
+			log.Fatalf("child: lookup %s: %v", args[0], err) // #nosec G706 -- args[0] is the command name
+		}
+		if err := guard.RunChild(target, args); err != nil {
+			log.Fatalf("child: %v", err)
+		}
+		return
 	}
 
-	secrets := make([]secretfuse.SecretConfig, len(cfg.Secrets))
-	for i, s := range cfg.Secrets {
-		maxR := s.MaxReads
-		if maxR == 0 {
-			maxR = int32(*maxReads)
-		}
-		secrets[i] = secretfuse.SecretConfig{
-			Reference:   s.Reference,
-			Filename:    s.Filename,
-			MaxReads:    maxR,
-			AllowedCmds: s.AllowedCmds,
-			SymlinkTo:   s.SymlinkTo,
-			Writable:    s.Writable,
-			OPAccount:   s.OPAccount,
-		}
+	// Parent mode
+	secretPath := flag.String("path", "", "File path to intercept (the path the app tries to open)")
+	reference := flag.String("ref", "", "1Password reference (e.g. op://vault/item/field)")
+	account := flag.String("account", os.Getenv("OP_ACCOUNT"), "1Password account (default: $OP_ACCOUNT)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
+	hashBinary := flag.String("hash", "", "Print SHA-256 hash of a binary and exit")
+	flag.Parse()
+
+	// Utility: hash a binary
+	if *hashBinary != "" {
+		printBinaryHash(*hashBinary)
+		return
+	}
+
+	args := flag.Args()
+	if *secretPath == "" || *reference == "" || len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: secrets-guard -path <file> -ref <op://...> [flags] -- <command> [args...]\n")
+		fmt.Fprintf(os.Stderr, "       secrets-guard -hash /usr/bin/myapp\n\n")
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
 
-	refs := make([]string, len(secrets))
-	for i, s := range secrets {
-		refs[i] = s.Reference
-	}
+	p := expandPath(*secretPath)
+	secrets := []guard.SecretMapping{{
+		Path:      p,
+		Reference: *reference,
+		Filename:  filepath.Base(p),
+	}}
 
-	// Initialize secret manager (uses desktop app auth via OP_ACCOUNT or --account flag)
-	// Priority: env var > config file
-	account := os.Getenv("OP_ACCOUNT")
-	if account == "" {
-		account = cfg.OPAccount
-	}
-	manager, err := secretmanager.NewOnePasswordManager(ctx, refs, account)
+	manager, err := secretmanager.NewOnePasswordManager(ctx, []string{*reference}, *account)
 	if err != nil {
 		log.Fatalf("Failed to initialize 1Password: %v", err)
 	}
 
-	if err := os.MkdirAll(*mountPoint, 0755); err != nil {
-		log.Fatalf("Failed to create mount point: %v", err)
-	}
-
-	root := secretfuse.NewSecretRoot(manager, secrets, int32(*maxReads))
-
-	zero := time.Duration(0)
-	opts := &fs.Options{
-		MountOptions: fuse.MountOptions{
-			Name:        "secrets-fuse",
-			DirectMount: true,
-			Debug:       *debug,
-		},
-		// Disable caching to ensure fresh reads after writes
-		AttrTimeout:     &zero,
-		EntryTimeout:    &zero,
-		NegativeTimeout: &zero,
-	}
-
-	server, err := fs.Mount(*mountPoint, root, opts)
+	target, err := exec.LookPath(args[0])
 	if err != nil {
-		log.Fatalf("Mount failed: %v", err)
+		log.Fatalf("command not found: %s", args[0])
 	}
 
-	fmt.Printf("Secrets mounted at %s (provider: %s)\n", *mountPoint, manager.Name())
-	fmt.Printf("Configured secrets:\n")
-	for _, s := range secrets {
-		readLimit := "unlimited"
-		if s.MaxReads > 0 {
-			readLimit = fmt.Sprintf("%d", s.MaxReads)
+	g := guard.New(manager, secrets, *debug)
+
+	fmt.Printf("secrets-guard: intercepting %s -> %s\n", p, *reference)
+	fmt.Printf("secrets-guard: running %s\n", target)
+
+	if err := g.Run(target, args); err != nil {
+		var exitErr *guard.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
 		}
-		fmt.Printf("  - %s (max reads: %s)\n", s.Filename, readLimit)
+		log.Fatalf("guard: %v", err)
 	}
+}
 
-	var symlinks []string
-	for i := range secrets {
-		link, err := secrets[i].CreateSymlink(*mountPoint)
-		if err != nil {
-			log.Fatalf("Failed to create symlink: %v", err)
-		}
-		if link != "" {
-			symlinks = append(symlinks, link)
-			fmt.Printf("  symlink: %s\n", link)
-		}
+func printBinaryHash(path string) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("resolve path: %v", err)
 	}
+	f, err := os.Open(abs) // #nosec G304 -- path is user-specified for hashing
+	if err != nil {
+		log.Fatalf("open %s: %v", abs, err)
+	}
+	defer f.Close()
 
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\nUnmounting...")
-
-		for _, link := range symlinks {
-			if err := os.Remove(link); err != nil {
-				fmt.Printf("Failed to remove symlink %s: %v\n", link, err)
-			}
-		}
-
-		// Try graceful unmount with timeout
-		done := make(chan error, 1)
-		go func() {
-			done <- server.Unmount()
-		}()
-
-		select {
-		case err := <-done:
-			if err != nil {
-				fmt.Printf("Unmount failed: %v\n", err)
-			}
-		case <-time.After(3 * time.Second):
-			fmt.Println("Unmount timed out: filesystem is busy.")
-			fmt.Println("Please close any files or terminals using the mount and try again.")
-			fmt.Printf("Mount point: %s\n", *mountPoint)
-		}
-	}()
-
-	server.Wait()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		log.Fatalf("hash %s: %v", abs, err)
+	}
+	fmt.Println("sha256:" + hex.EncodeToString(h.Sum(nil)))
 }
